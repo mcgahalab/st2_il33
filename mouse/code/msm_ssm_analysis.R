@@ -63,7 +63,7 @@ getBidirSigGenes <- function(res, fc_col='log2FoldChange', padj_col='padj',
 # the metafile provided for annotation
 degHeatmap <- function(exprmat, genes, meta_df=NULL, genes_style='ENS', 
                        sample_order=NULL, cluster_rows=FALSE, 
-                       cluster_cols=FALSE, title=''){
+                       cluster_cols=FALSE, title='', scale_score=TRUE){
   if(any(duplicated(genes))) genes <- genes[-which(duplicated(genes))]
   ens_genes <- if(genes_style=='SYMBOL') ens_ids[genes] else genes
   sym_genes <- if(genes_style=='SYMBOL') genes else gene_ids[genes]
@@ -80,14 +80,14 @@ degHeatmap <- function(exprmat, genes, meta_df=NULL, genes_style='ENS',
   # Create gene expression matrix subset
   if(is.null(sample_order)) sample_order <- c(1:ncol(exprmat))
   gene_heatmap <- exprmat[ens_genes,sample_order]
-  gene_heatmap2 <- as.data.frame(t(apply(gene_heatmap, 1, scale)))
+  gene_heatmap2 <- if(scale_score) as.data.frame(t(apply(gene_heatmap, 1, scale))) else gene_heatmap
   colnames(gene_heatmap2) <- colnames(gene_heatmap)
   rownames(gene_heatmap2) <- sym_genes
   
   phm <- pheatmap(gene_heatmap2, 
                   cluster_rows=cluster_rows, cluster_cols=cluster_cols,
                   show_rownames=T, show_colnames=F,
-                  annotation_col=if(!is.null(meta_df)) meta_df[sample_order,] else meta_df,
+                  annotation_col=if(!is.null(meta_df)) meta_df[sample_order,,drop=F] else meta_df,
                   main=title)
   return(phm)
 }
@@ -102,22 +102,22 @@ getGSEA <- function(geneset_df, lfc_v, return.df=FALSE){
   gsea_df <- if(return.df) as.data.frame(gsea_out)[,1:10] else gsea_out
   return(gsea_df)
 }
-vizGSEA.bp <- function(gsea_df, topn=15){
+vizGSEA.bp <- function(gsea_df, topn=15, title=NULL){
   # Barplot of NES for the GSEA terms, ordered by NES
-  b <- c(0, 0.05, 0.1, 0.5, 1)
-  if(!any(gsea_df$p.adjust < 0.05)){
+  b <- c(0, 0.05, 0.1)
+  if(!any(gsea_df$p.adjust < 0.1)){
     return(NULL)
   }
   gsea_df %>%
-    filter(p.adjust < 0.05) %>%
+    filter(p.adjust < 0.1) %>%
     mutate(direction=NES>0) %>%
     group_by(direction) %>%
     slice(1:topn) %>%
     enrichplot:::barplot.enrichResult(x='NES', showCategory=(topn*2)) +
     scale_fill_gradientn(limits = c(min(b),max(b)),
-                         colours=colorRampPalette(c("red", "yellow", "grey", "black"))(7),
-                         breaks=b, labels=format(b),
-                         values=c(0, seq(0.01, 0.05, length.out=5), 1)) +
+                         colours=colorRampPalette(c("red", "orange", "yellow"))(7),
+                         breaks=b, labels=format(b)) +
+    ggtitle(title) +
     theme(text = element_text(size=8),
           axis.text.y = element_text(size=8))  +
     xlim(-6,6) +
@@ -261,12 +261,22 @@ resl <- lapply(celltypes, function(celltype){
   res$gene <- gene_ids[res$ens]
   res$gene[is.na(res$gene)] <- res$ens[is.na(res$gene)]
   
-  write.table(res, file=file.path(outdir, paste0(celltype, "_degs.csv")), 
+  res_sdigits <- res
+  for(col_i in colnames(res)){
+    if(is.numeric(res[,col_i])){
+      res_i <- res[,col_i]
+      sdig <- if(mean(abs(res_i), na.rm=T) > 10) 2 else 6
+      res_sdigits[,col_i] <- round(res[,col_i], sdig)
+    }
+  }
+  
+  write.table(res_sdigits, file=file.path(outdir, paste0(celltype, "_degs.csv")), 
               col.names = T,row.names = F, quote=F, sep=",")
   saveRDS(res, file=file.path(outdir, "rds", paste0(celltype, "_degs.rds")))
   return(list("res"=res, "dds_lnBase"=dds, "dds_tdlnBase"=dds2))
 })
 saveRDS(resl, file=file.path(outdir, "rds", "resl.rds"))
+resl <- readRDS(file.path(outdir, "rds", "resl.rds"))
 
 
 ### DEMO: Explaining how to read the results from the DEG
@@ -298,22 +308,27 @@ if(do_demo){
 #### 3) Gene set of interest ####
 inflammatory_goi <- c("CCR2", "IL18", "IL15", "IRF5", "CXCL11", "CXCL10", "IL6", 
                       "IL1B", "IL1A", "PTGES", "IL15RA", "RELA", "TNF", "CD86", "CD80", 
-                      "ILRAP", "SOCS3", "NLRP3", "SELL", "PGS2", "STAT1", "CD40", "Slc7a2", 
-                      "Serpinb2", "Ppap2a", "Slc7a11", "STAT3", "AP1", "HIF1A", "INOS", 
-                      "COX2", "IFNY", "IL23", "il12") 
-inflammatory_goi <- str_to_title(inflammatory_goi)
+                      "SOCS3", "NLRP3", "SELL", "STAT1", "CD40", "Slc7a2", 
+                      "Serpinb2", "Slc7a11", "STAT3", "HIF1A") 
+inf2 <- c("Il1rap", "Jun", "Plpp1", "Nos2", "Ptgs2", 
+          "Ifng", "Il23a", "Il12a", "Il12b")
+inflammatory_goi <- str_to_title(c(inflammatory_goi, inf2))
 
-anti_inflammatory_goi <- c("IL10RA", "MMP13", "MSR1", "CCL17", "CCL22", "IL4RA", "TFGB1", 
+anti_inflammatory_goi <- c("IL10RA", "MMP13", "MSR1", "CCL17", "CCL22", "IL4RA", 
                            "CLEC7A", "CLEC2i", "clec4a2", "pdgfa", "cd36", "cxcl2", "cxcl3", 
-                           "chi3l3", "pdgfc", "tnfs10", "mmp9", "mrc1", "fpr1", "trem2", "retnla", 
+                           "pdgfc", "mmp9", "mrc1", "fpr1", "trem2", "retnla", 
                            "pdgfb", "stab1", "f13a1", "irf4", "stat3", "ccl12", "ccl7", "clec10a", 
-                           "mgl2", "soc2", "stat6", "igf1", "ptgs2", "IL10", "LRX", "PPARY", 
-                           "SOCS1", "GATA3", "FIZZ1", "IL8", "IL4", "IL13", "VEGFA", "Ahrr", 
-                           "ATF6b", "atf4", "atf1", "atf2", "atf3", "atf4", "atf56", "atf7", 
-                           "arg1", "arg2", "Ahr", "Cyp1a1", "Cyp1b2", "Ido1", "Ido2", "Gcn1l1", 
+                           "mgl2", "stat6", "igf1", "ptgs2", "IL10",  
+                           "SOCS1", "GATA3", "IL4", "IL13", "VEGFA", "Ahrr", 
+                           "ATF6b", "atf4", "atf1", "atf2", "atf3", "atf4", "atf7", 
+                           "arg1", "arg2", "Ahr", "Cyp1a1", "Ido1", "Ido2", 
                            "Ddit3", "il33")
-anti_inflammatory_goi <- str_to_title(anti_inflammatory_goi)
+ainf2 <- c('Tgfb1', 'Chil3', 'Tnfsf10', 'Socs2', 'Nr1h3', 'Pparg', 'Retnla', 'cxcl15', 
+           'Atf5', 'Atf6', 'cyp1b1', 'Gcn1')
+anti_inflammatory_goi <- str_to_title(c(anti_inflammatory_goi, ainf2))
 
+inflammatory_goi[which(!inflammatory_goi %in% gene_ids)]
+anti_inflammatory_goi[which(!anti_inflammatory_goi %in% gene_ids)]
 lapply(names(resl), function(ct){
   res <- resl[[ct]]$res
   res_inflammatory <- res[res$gene %in% inflammatory_goi,]
@@ -330,19 +345,19 @@ saveRDS(list("anti-inflammatory"=anti_inflammatory_goi,
              "inflammatory"=inflammatory_goi),
         file=file.path(outdir, "goi.rds"))
 
-#####################################
-#### 4.a) vizDEG: Visualize DEGs ####
+##################################
+#### 4 vizDEG: Visualize DEGs ####
 celltypes <- setNames(celltypes,celltypes)
 res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
 gois <- readRDS(file.path(outdir, "goi.rds"))
 
 ## Params
-top_genes <- 40
+top_genes <- 50
 q_threshold <- 0.05
-get_top=TRUE
+get_interaction=TRUE
 get_delta_tdln=TRUE
 
-phms <- lapply(names(res_dds), function(celltype, get_delta_tdln, get_top){
+phms <- lapply(names(res_dds), function(celltype, get_delta_tdln, get_interaction){
   print(celltype)
   res <- res_dds[[celltype]]$res        # DESeq results data frame
   dds <- res_dds[[celltype]]$dds_lnBase # DESeq object
@@ -355,7 +370,8 @@ phms <- lapply(names(res_dds), function(celltype, get_delta_tdln, get_top){
 
   phm_tops <- list()
   # Get top X significant genes from DESeq results; split based on direction
-  if(get_top){
+  if(get_interaction){
+    ## Top X genes based on the interaction term with LN-PBS as the base
     resl <- getBidirSigGenes(res, fc_col='log2FoldChange.int', padj_col='padj.int',
                              qthresh=q_threshold, topn=top_genes)
     genes <- unlist(lapply(resl, function(i) i$ens))
@@ -363,14 +379,28 @@ phms <- lapply(names(res_dds), function(celltype, get_delta_tdln, get_top){
     if(any(is.na(symbols))) symbols[is.na(symbols)] <- genes[is.na(symbols)]
     
     ## DEG Heatmap for top 40 genes in either direction
-    phm_tops[['interaction']] <- degHeatmap(
+    exprmat_fc <- res %>%
+      tibble::column_to_rownames(var='ens') %>%
+      select(grep("log2Fold.*\\.ov", colnames(res), value=T)) %>%
+      rename_with(~ gsub("log2.*\\.", "", .))
+    meta_df_fc <- data.frame("celltype"=rep(celltype, ncol(exprmat_fc)),
+                             "group"=colnames(exprmat_fc), 
+                             row.names = colnames(exprmat_fc))
+    phm_tops[['interaction_sample']] <- degHeatmap(
       exprmat=assay(vsd), meta_df=meta_df,  
       genes=genes, genes_style='ENS', sample_order=order_idx, 
       title=paste0("INTERACTION: ", celltype, "-  top_", top_genes)
     )
+    phm_tops[['interaction_fc']] <- degHeatmap(
+      exprmat=exprmat_fc, meta_df=meta_df_fc,  
+      genes=genes, genes_style='ENS', sample_order=c(2,1), 
+      title=paste0("INTERACTION: ", celltype, "-  top_", top_genes),
+      scale_score = FALSE
+    )
   }
   
   if(get_delta_tdln){
+    ## Top X genes based on differnetially expressed between TDLN-CIS to TDLN-PBS
     res2 <- res[which(res$padj.int < 0.05),]
     resl <- getBidirSigGenes(res2, fc_col='log2FoldChange.ovTDLN', 
                              padj_col='padj.ovTDLN', qthresh=q_threshold, 
@@ -392,9 +422,23 @@ phms <- lapply(names(res_dds), function(celltype, get_delta_tdln, get_top){
     degHeatmap(exprmat=assay(vsd), meta_df=meta_df,  genes=gois[[goi]], 
                genes_style='SYMBOL', sample_order=order_idx, 
                cluster_rows=TRUE, title=paste0(celltype, ": ", goi))
+    
   })
+  ## DEG Heatmap for top 40 genes in either direction
+  if(get_interaction){
+    phm_gois_interaction <- lapply(names(gois), function(goi){
+      degHeatmap(
+        exprmat=exprmat_fc, meta_df=meta_df_fc,  
+        genes=ens_ids[gois[[goi]]], genes_style='ENS', sample_order=c(2,1), 
+        cluster_rows=T, scale_score = FALSE,
+        title=paste0(celltype, ": interaction - ", goi)
+      )
+    })
+    phm_gois <- c(phm_gois, phm_gois_interaction)
+  }
+  
   return(list("res"=do.call(rbind, resl), "phm_tops"=phm_tops, "phms_goi"=phm_gois))
-}, get_top=get_top, get_delta_tdln=get_delta_tdln)
+}, get_interaction=get_interaction, get_delta_tdln=get_delta_tdln)
 names(phms) <- names(res_dds)
 
 pdf(file.path(outdir, paste0("heatmap_top", top_genes, ".pdf")), 
@@ -412,40 +456,6 @@ lapply(phms_goi, function(i){
 })
 dev.off()
 
-#####################################
-#### 4.b) vizDEG: Visualize DEGs ####
-lfc_cols <- setNames(paste0('log2FoldChange.', c('ovTDLN', 'ovLN', 'int')),
-                     c('tdln', 'ln', 'int'))
-
-lapply(names(res_dds), function(celltype){
-   dds <- res_dds$MSM$dds_tdlnBase
-  res <- res_dds$MSM$res
-  
-  res_sig <- res[which(res$padj.int < 0.001),]
-  if(any(duplicated(res_sig$gene))) res_sig <- res_sig[which(!duplicated(res_sig$gene)),]
-  delta_mat <- res_sig[,lfc_cols[c('tdln', 'ln')]]
-  hc <- hclust(dist(delta_mat))
-  mres <- melt(res_sig[,c('gene', lfc_cols[c('tdln', 'ln')])])
-  mres_int <- melt(res_sig[,c('gene', lfc_cols[c('int')])])
-  mres$gene <- factor(mres$gene, levels=res_sig$gene)
-  mres_int$gene <- factor(mres_int$gene, levels=res_sig$gene)
-  
-  gg_hm <- ggplot(mres, aes(x=gene, y=variable, fil=value)) +
-    geom_tile + 
-    theme_classic()
-  gg_bp <- ggplot(mres, aes(x=value, y=gene)) +
-    geom_tile + 
-    theme_classic()
-})
-dds <- res_dds$MSM$dds_tdlnBase
-counts(dds)[genes,]
-res <- res_dds$MSM$res
-genes <- rownames(coef(dds))[1:5]
-
-coef(dds)[genes,]
-res[which(res$ens %in% genes),]
-mcols(dds)[genes,]
-
 ##############################################
 #### 5) GSEA: enrichment analysis on DEGs ####
 celltypes <- setNames(celltypes,celltypes)
@@ -454,9 +464,9 @@ gois <- readRDS(file.path(outdir, "goi.rds"))
 
 msig_lvls <- list('H'=list(NULL),                       # hallmark gene sets
                   'C2'=list('CP:REACTOME'),             # curated gene sets
-                  # 'C5'=list('GO:BP', 'GO:CC', 'GO:MF'), # ontology gene sets
+                  'C5'=list('GO:BP', 'GO:CC', 'GO:MF'), # ontology gene sets
                   # 'C7'=list('IMMUNESIGDB'),             # immunologic signature gene sets
-                  # 'C8'=list(NULL),                      # cell type signature gene sets
+                  'C8'=list(NULL),                      # cell type signature gene sets
                   'custom'=list('custom'=gois))           # custom genesets
 
 ct_res_gras <- lapply(names(res_dds), function(celltype){
@@ -467,9 +477,6 @@ ct_res_gras <- lapply(names(res_dds), function(celltype){
   # LFC for interaction terms
   resl[['interaction']] <- list(res=res, 
                                 lfc_col="log2FoldChange.int")
-  # LFC for CIS-PBS on terms different between TDLN and LN
-  resl[['ovTDLN']] <- list(res=res[which(res$padj.int < 0.05),], 
-                           lfc_col="log2FoldChange.ovTDLN")
   
   res_gras <- lapply(resl, function(res_i){
     res <- res_i$res
@@ -498,12 +505,13 @@ ct_res_gras <- lapply(names(res_dds), function(celltype){
         msig_gsea_df <- as.data.frame(msig_gsea)[,1:10]
         
         # Barplot of NES for significant GSEA terms, ordered by NES
-        gsea_bp <- vizGSEA.bp(msig_gsea_df, topn=15)
+        title <- paste0(mlvl, " [", sublvl, "] : ", celltype)
+        gsea_bp <- vizGSEA.bp(msig_gsea_df, topn=25, title = title)
         
         # Heatmap visualizing the LFC of Genesets by Genes
-        gsea_heat <- vizGSEA.hm(msig_gsea, lfc_v=lfc_v, topn=15)
+        # gsea_heat <- vizGSEA.hm(msig_gsea, lfc_v=lfc_v, topn=15)
         
-        return(list("gsea-viz"=list(gsea_bp, gsea_heat), ### dp, gg_gsea, ridge),
+        return(list("gsea-viz"=list(gsea_bp), #, gsea_heat), ### dp, gg_gsea, ridge),
                     "gsea-tbl"=msig_gsea_df))
       })
       
@@ -523,40 +531,35 @@ ct_res_gras <- lapply(names(res_dds), function(celltype){
   return(res_gras)
 })
 names(ct_res_gras) <- names(res_dds)
+saveRDS(ct_res_gras, file=file.path(outdir, "GSEA-response.rds"))
 
-saveRDS(gras, file=file.path(PDIR, "results", "manual", "GSEA-response.rds"))
-
-pdf(file.path(outdir, "GSEA-response.pdf"), width = 12)
-gras_unlist <- lapply(unlist(ct_res_gras, recursive = F), function(i) i$H$`NA`)
-lapply(names(gras_unlist), function(id) {
-  lapply(gras_unlist[[id]]$`gsea-viz`, function(j) {
-    tryCatch({
-      j + ggtitle(id)
-    }, error=function(e) print(1)
-    )
-  })
+## Write out GSEA results
+gsea_tbls <- lapply(unlist(unlist(unlist(ct_res_gras, recursive = F), recursive = F), recursive=F), 
+                    function(i){
+  i$`gsea-tbl`
 })
 
-gras_unlist <- lapply(unlist(ct_res_gras, recursive = F), function(i) i$C2$`CP:REACTOME`)
-lapply(names(gras_unlist), function(id) {
-  lapply(gras_unlist[[id]]$`gsea-viz`, function(j) {
-    tryCatch({
-      j + ggtitle(id)
-    }, error=function(e) print(1)
-    )
-  })
-})
+drop_cols <- c('Description', 'leading_edge')
+gsea_tbl <- do.call(rbind, gsea_tbls) %>%
+  mutate("LE.tags"=gsub(".*tags=([0-9]*%).*", "\\1", leading_edge)) %>%
+  mutate("LE.list"=gsub(".*list=([0-9]*%).*", "\\1", leading_edge)) %>%
+  mutate("LE.signal"=gsub(".*signal=([0-9]*%).*", "\\1", leading_edge)) %>%
+  select(-one_of(drop_cols)) %>%
+  mutate(grp_id=rep(names(gsea_tbls), sapply(gsea_tbls, nrow)))
+write.table(gsea_tbl, file=file.path(outdir, "gsea_tbl.csv"), sep=",", 
+            col.names = T, row.names = F, quote = F)
 
-gras_unlist <- lapply(unlist(ct_res_gras, recursive = F), function(i) i$custom$custom)
-lapply(names(gras_unlist), function(id) {
-  lapply(gras_unlist[[id]]$`gsea-viz`, function(j) {
-    tryCatch({
-      j + ggtitle(id)
-    }, error=function(e) print(1)
-    )
-  })
-})
+## Visualization of GSEA barplots
+pdf(file.path(outdir, "gsea_response.pdf"), width = 12)
+gsea_vizs <- lapply(unlist(unlist(unlist(ct_res_gras, recursive = F), recursive = F), recursive=F), 
+                    function(i){
+                      i$`gsea-viz`
+                    })
+gsea_vizs
 dev.off()
+
+#########################################
+#### 6) WGCNA: Coexpression analysis ####
 
 ##################################################################################
 #### 6. single-sample GSEA on each cell-type using the top Response gene-sets ####
