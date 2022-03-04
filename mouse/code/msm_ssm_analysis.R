@@ -1,4 +1,6 @@
 ## Sara's MSM_SSM project
+library(WGCNA)
+library(igraph)
 library(ggplot2)
 library(reshape2)
 library(DESeq2)
@@ -276,6 +278,7 @@ resl <- lapply(celltypes, function(celltype){
   return(list("res"=res, "dds_lnBase"=dds, "dds_tdlnBase"=dds2))
 })
 saveRDS(resl, file=file.path(outdir, "rds", "resl.rds"))
+saveRDS(coldata, file=file.path(outdir, "rds", "coldata.rds"))
 resl <- readRDS(file.path(outdir, "rds", "resl.rds"))
 
 
@@ -560,6 +563,131 @@ dev.off()
 
 #########################################
 #### 6) WGCNA: Coexpression analysis ####
+celltypes <- setNames(celltypes,celltypes)
+res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
+
+## A) Setup the filtered TPM matrix and metadata -------------------------------
+## Create the DESeq object based on TPM matrix
+cts <- read.table(file.path("counts", "all_tpm.tsv"), header=TRUE,
+                  row.names="gene", check.names=FALSE, stringsAsFactors = F)
+cts_tmp <- apply(cts, 2, as.numeric)
+rownames(cts_tmp) <- rownames(cts)
+coldata <- readRDS(file=file.path(outdir, "rds", "coldata.rds"))
+
+## Remove low expressed genes
+cts_filt <- cts_tmp %>%
+  as.data.frame() %>%
+  dplyr::filter(rowSums(.) >= 50)
+
+
+## Create DESeq2 matrix
+dds <- DESeqDataSetFromMatrix(countData = cts_filt,
+                              colData = coldata,
+                              design= ~ condition)
+dds <- DESeq(dds)
+
+## B) Identifying power for network modules ------------------------------------
+## Pick a soft power threshold  for linking the Similarity Matrix to the Adjacency Matrix
+normalized_array <- t(assay(dds))
+storage.mode(normalized_array) <- 'numeric'
+sft <- pickSoftThreshold(normalized_array,
+                         dataIsExpr = TRUE,
+                         corFnc = cor,
+                         networkType = "signed"
+)
+
+sft_df <- data.frame(sft$fitIndices) %>%
+  dplyr::mutate(model_fit = -sign(slope) * SFT.R.sq)
+
+## Computer the network modules and eigengenes from the adjacency matrix using TOM signed
+pwr <- 16
+bwnet <- blockwiseModules(normalized_array,
+                          maxBlockSize = 5000, 
+                          TOMType = "signed",
+                          power=pwr,
+                          numericLabels = TRUE,
+                          randomSeed = 1234)
+module_eigengenes <- bwnet$MEs
+
+# plot adjacency network (https://www.biostars.org/p/402720/)
+adjacency <- adjacency(normalized_array, power=pwr, type="signed")
+tom <- TOMsimilarity(adjacency)
+tom[tom > 0.1] = 1
+tom[tom != 1] = 0
+network <- graph.adjacency(tom)
+network <- simplify(network)  # removes self-loops
+V(network)$color <- bwnet$colors
+network <- delete.vertices(network, degree(network)==0)
+# plot(network, layout=layout.fruchterman.reingold(network), 
+#      edge.arrow.size = 0.2)
+
+## C) Associating eigengene modules with significant interaction DEGs
+gene_modules <- lapply(names(res_dds), function(res_id){
+  res <- res_dds[[res_id]]$res
+  
+  # Merge eigengene modules with p-values per MSM interaction
+  gene_module_key <- tibble::enframe(bwnet$colors, name = "gene", value = "module") %>%
+    dplyr::mutate(module = paste0("ME", module)) %>% 
+    mutate("hugo"=gene_ids[gene]) %>%
+    mutate("entrez"=ens2entrez_ids[gene]) %>%
+    inner_join(res %>%
+                 select(c("ens", "log2FoldChange.int", "padj.int")),
+               by=c("gene" = "ens"))
+  
+  # Summarize the p-adjusted values per eigengene module
+  module_deg <- gene_module_key %>% 
+    group_by(module) %>%
+    dplyr::summarise(mean=mean(padj.int, na.rm=T), 
+                     sd=sd(padj.int, na.rm=T), 
+                     median=median(padj.int, na.rm=T),
+                     q95=quantile(padj.int, 0.95, na.rm=T),
+                     n=n()) %>%
+    arrange(q95)
+  
+  # Subset for the gene_modules that have a Q95 padj value < 0.05
+  sig_modules <- gene_module_key %>%
+    group_by(module) %>%
+    filter(module %in% (module_deg %>% 
+                          filter(q95 < 0.05) %>%
+                          select(module) %>% 
+                          unlist())) %>%
+    group_split()
+  
+  
+  ## D) Overrepresentation analysis of modules -----------------------------------
+  oraFun <- function(msig_ds, entrez_genes){
+    # overrepresentation analysis
+    sig_ora <- tryCatch({
+      enricher(gene = na.omit(entrez_genes), TERM2GENE = msig_ds)@result
+    }, error=function(e){NULL})
+    return(sig_ora)
+  }
+  
+  ## Select the genes of module X
+  module_ids <- sapply(sig_modules, function(i) unique(i$module))
+  module_oras <- lapply(setNames(module_ids,module_ids), function(me){
+    module_genes <- gene_module_key %>%
+      dplyr::filter(module == me)
+    
+    oras <- iterateMsigdb(species='Mus musculus', fun=oraFun, 
+                          entrez_genes=module_genes$entrez)
+    oras <- lapply(oras, summarizeOra)
+    return(do.call(rbind, oras))
+  })
+  saveRDS(module_oras, file=file.path(outdir, "rds", paste0(res_id, "_coexpression_modules.rds")))
+  
+  module_ora <- do.call(rbind, module_oras) %>%
+    as.data.frame() %>%
+    mutate("module"=rep(names(module_oras), sapply(module_oras, nrow)))
+  write.table(module_ora, file=file.path(outdir, paste0(res_id, "coexpression_module.csv")),
+              sep=",", quote=F, row.names = F, col.names = T)
+  return(list("ora"=module_oras, "modules"=sig_modules))
+})
+
+
+
+
+
 
 ##################################################################################
 #### 6. single-sample GSEA on each cell-type using the top Response gene-sets ####
