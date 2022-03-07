@@ -45,10 +45,14 @@ celltypes <- setNames(celltypes,celltypes)
 # genes in both directions.
 getBidirSigGenes <- function(res, fc_col='log2FoldChange', padj_col='padj',
                              qthresh=0.05, topn=25){
-  res <- res[order(res[,padj_col]),]
+  res <- res[order(res[,padj_col[1]]),]
   resl <- lapply(split(res, f=res[,fc_col]>0), function(i) {
     # Select all genes below the q-cutoff threshold
-    iq <- i[,padj_col] < qthresh
+    iq <- if(length(padj_col)>1){
+      rowSums(sapply(padj_col, function(p_id) i[,p_id] < qthresh), na.rm=T) == length(padj_col)
+    } else {
+      i[,padj_col] < qthresh
+    }
     if(sum(iq,na.rm=T) > 0){
       i <- i[which(iq),]
     } else {
@@ -65,7 +69,8 @@ getBidirSigGenes <- function(res, fc_col='log2FoldChange', padj_col='padj',
 # the metafile provided for annotation
 degHeatmap <- function(exprmat, genes, meta_df=NULL, genes_style='ENS', 
                        sample_order=NULL, cluster_rows=FALSE, 
-                       cluster_cols=FALSE, title='', scale_score=TRUE){
+                       cluster_cols=FALSE, title='', scale_score=TRUE,
+                       ...){
   if(any(duplicated(genes))) genes <- genes[-which(duplicated(genes))]
   ens_genes <- if(genes_style=='SYMBOL') ens_ids[genes] else genes
   sym_genes <- if(genes_style=='SYMBOL') genes else gene_ids[genes]
@@ -78,6 +83,10 @@ degHeatmap <- function(exprmat, genes, meta_df=NULL, genes_style='ENS',
   non_na_idx <- !is.na(ens_genes)
   ens_genes <- ens_genes[which(non_na_idx)]
   sym_genes <- sym_genes[which(non_na_idx)]
+  if(any(is.na(sym_genes))){
+    idx <- which(is.na(sym_genes))
+    sym_genes[idx] <- ens_genes[idx]
+  }
   
   # Create gene expression matrix subset
   if(is.null(sample_order)) sample_order <- c(1:ncol(exprmat))
@@ -86,11 +95,13 @@ degHeatmap <- function(exprmat, genes, meta_df=NULL, genes_style='ENS',
   colnames(gene_heatmap2) <- colnames(gene_heatmap)
   rownames(gene_heatmap2) <- sym_genes
   
+  if(any(is.na(gene_heatmap2))) gene_heatmap2[is.na(gene_heatmap2)] <- 0
   phm <- pheatmap(gene_heatmap2, 
                   cluster_rows=cluster_rows, cluster_cols=cluster_cols,
                   show_rownames=T, show_colnames=F,
                   annotation_col=if(!is.null(meta_df)) meta_df[sample_order,,drop=F] else meta_df,
-                  main=title)
+                  main=title,
+                  ...)
   return(phm)
 }
 
@@ -217,8 +228,10 @@ resl <- lapply(celltypes, function(celltype){
   overall_reslfc_ln <- lfcShrink(dds, coef=coef, type="apeglm")
   overall_ma_ln <- plotMA(overall_reslfc_ln, ylim=c(-3,3), cex=.8)
   abline(h=c(-1,1), col="dodgerblue", lwd=2)
-  overall_reslfc_ln <- as.data.frame(overall_reslfc_ln)
-  overall_reslfc_ln$ens <- rownames(overall_reslfc_ln)
+  overall_reslfc_ln <- overall_reslfc_ln %>%
+    as.data.frame() %>%
+    rename_with(~ paste0(., ".ln_cis-pbs")) %>%
+    tibble::rownames_to_column(var='ens') 
   
   ## INTERPRETING INTERACTION TERMS
   # lnstatusTDLN.treatmentCIS
@@ -231,10 +244,12 @@ resl <- lapply(celltypes, function(celltype){
   resultsNames(dds)
   coef <- 'lnstatusTDLN.treatmentCIS'
   interact_reslfc <- lfcShrink(dds, coef=coef, type="apeglm")
-  interact_reslfc <- as.data.frame(interact_reslfc)
-  interact_reslfc$ens <- rownames(interact_reslfc)
+  interact_reslfc <- interact_reslfc %>%
+    as.data.frame() %>%
+    rename_with(~ paste0(., ".interaction")) %>%
+    tibble::rownames_to_column(var='ens') 
   
-  ## MAIN TREATMENT EFFECT
+  ## MAIN TREATMENT EFFECT 1
   # Relates to the treatment effect of CIS vs PBS for TDLN
   # - By setting the reference level to TDLN, we can evaluate CIS vs PBS
   # differences in terms of TDLN status
@@ -248,18 +263,37 @@ resl <- lapply(celltypes, function(celltype){
   dds2 <- DESeq(dds2)
   coef <- 'treatment_CIS_vs_PBS'
   overall_reslfc_tdln <- lfcShrink(dds2, coef=coef, type="apeglm")
-  overall_reslfc_tdln <- as.data.frame(overall_reslfc_tdln)
-  overall_reslfc_tdln$ens <- rownames(overall_reslfc_tdln)
+  overall_reslfc_tdln <-  overall_reslfc_tdln %>%
+    as.data.frame() %>%
+    rename_with(~ paste0(., ".tdln_cis-pbs")) %>%
+    tibble::rownames_to_column(var='ens') 
   
+  ## MAIN TREATMENT EFFECT 2
+  # Relates to the treatment effect of TDLN-CIS vs LN-CIS
+  # - By setting the reference level to LN and subsetting for only the CIS samples, 
+  # we can evaluate TDLN-CIS vs LN-CIS differences
+  coldata_l[[celltype]]$lnstatus <- relevel(coldata_l[[celltype]]$lnstatus, "LN")
+  cis_coldata <- coldata_l[[celltype]] %>% 
+    filter(treatment=='CIS')
+  dds3 <- DESeqDataSetFromMatrix(countData=cts[,rownames(cis_coldata)],
+                                 colData=cis_coldata,
+                                 design=as.formula('~lnstatus'))
+  
+  # remove uninformative columns
+  dds3 <- dds3[ rowSums(counts(dds3)) > 1, ]
+  dds3 <- DESeq(dds3)
+  coef <- resultsNames(dds3)[2]
+  overall_reslfc_cis <- lfcShrink(dds3, coef=coef, type="apeglm")
+  overall_reslfc_cis <- overall_reslfc_cis %>%
+    as.data.frame() %>%
+    rename_with(~ paste0(., ".cis_tdln-ln")) %>%
+    tibble::rownames_to_column(var='ens') 
   
   ## Identify the differential genes
   res <- Reduce(function(x,y) merge(x,y,by='ens'), list(overall_reslfc_tdln, 
                                                         overall_reslfc_ln, 
+                                                        overall_reslfc_cis,
                                                         interact_reslfc))
-  colnames(res)[-1] <- colnames(res)[-1] %>% 
-    gsub("([^xy])$", "\\1.int", .) %>%
-    gsub(".x", ".ovTDLN", .) %>%
-    gsub(".y", ".ovLN", .)
   res$gene <- gene_ids[res$ens]
   res$gene[is.na(res$gene)] <- res$ens[is.na(res$gene)]
   
@@ -279,7 +313,6 @@ resl <- lapply(celltypes, function(celltype){
 })
 saveRDS(resl, file=file.path(outdir, "rds", "resl.rds"))
 saveRDS(coldata, file=file.path(outdir, "rds", "coldata.rds"))
-resl <- readRDS(file.path(outdir, "rds", "resl.rds"))
 
 
 ### DEMO: Explaining how to read the results from the DEG
@@ -360,6 +393,10 @@ q_threshold <- 0.05
 get_interaction=TRUE
 get_delta_tdln=TRUE
 
+## Create heatmaps of DEGs, based on the interaction between:
+# 1) DEG of CIS: TDLN-LN
+# 2) Genes with significant differences based on the treatment effect
+annotation_colors <- list("treatment"=c("PBS"="black", "CIS"="red"))
 phms <- lapply(names(res_dds), function(celltype, get_delta_tdln, get_interaction){
   print(celltype)
   res <- res_dds[[celltype]]$res        # DESeq results data frame
@@ -370,12 +407,16 @@ phms <- lapply(names(res_dds), function(celltype, get_delta_tdln, get_interactio
   cnts <- counts(dds,normalized=TRUE)
   meta_df <- as.data.frame(colData(dds)[,c("lnstatus","treatment", "celltype")])
   order_idx <- with(meta_df, order(celltype, lnstatus, treatment))
-
+  meta_df_tdln <- split(meta_df, meta_df$lnstatus)$TDLN
+  order_idx_tdln <- with(meta_df_tdln, order(celltype, lnstatus, treatment))
+  
   phm_tops <- list()
   # Get top X significant genes from DESeq results; split based on direction
   if(get_interaction){
     ## Top X genes based on the interaction term with LN-PBS as the base
-    resl <- getBidirSigGenes(res, fc_col='log2FoldChange.int', padj_col='padj.int',
+    resl <- getBidirSigGenes(res, fc_col=c('log2FoldChange.interaction'),
+                             padj_col=c('padj.interaction', 
+                                        'padj.cis_tdln-ln'),
                              qthresh=q_threshold, topn=top_genes)
     genes <- unlist(lapply(resl, function(i) i$ens))
     symbols <- unlist(lapply(resl, function(i) i$gene))
@@ -383,58 +424,64 @@ phms <- lapply(names(res_dds), function(celltype, get_delta_tdln, get_interactio
     
     ## DEG Heatmap for top 40 genes in either direction
     exprmat_fc <- res %>%
+      as.data.frame() %>%
       tibble::column_to_rownames(var='ens') %>%
-      select(grep("log2Fold.*\\.ov", colnames(res), value=T)) %>%
+      select(grep("log2Fold.*\\.", colnames(res), value=T) %>% 
+               grep("interaction", ., value=T,invert=T)) %>%
       rename_with(~ gsub("log2.*\\.", "", .))
+    
     meta_df_fc <- data.frame("celltype"=rep(celltype, ncol(exprmat_fc)),
                              "group"=colnames(exprmat_fc), 
                              row.names = colnames(exprmat_fc))
     phm_tops[['interaction_sample']] <- degHeatmap(
-      exprmat=assay(vsd), meta_df=meta_df,  
-      genes=genes, genes_style='ENS', sample_order=order_idx, 
-      title=paste0("INTERACTION: ", celltype, "-  top_", top_genes)
+      exprmat=assay(vsd)[,rownames(meta_df_tdln)], meta_df=meta_df_tdln,  
+      genes=genes, genes_style='ENS', sample_order=order_idx_tdln, 
+      title=paste0("CIS(TDLN-LN) & Treatment: ", celltype, "-  top_", top_genes),
+      annotation_colors=annotation_colors
     )
     phm_tops[['interaction_fc']] <- degHeatmap(
       exprmat=exprmat_fc, meta_df=meta_df_fc,  
-      genes=genes, genes_style='ENS', sample_order=c(2,1), 
-      title=paste0("INTERACTION: ", celltype, "-  top_", top_genes),
-      scale_score = FALSE
+      genes=genes, genes_style='ENS', sample_order=c(1:ncol(exprmat_fc)), 
+      title=paste0("CIS(TDLN-LN) & Treatment: ", celltype, "-  top_", top_genes),
+      scale_score = FALSE, annotation_colors=annotation_colors
     )
   }
   
   if(get_delta_tdln){
     ## Top X genes based on differnetially expressed between TDLN-CIS to TDLN-PBS
     res2 <- res[which(res$padj.int < 0.05),]
-    resl <- getBidirSigGenes(res2, fc_col='log2FoldChange.ovTDLN', 
-                             padj_col='padj.ovTDLN', qthresh=q_threshold, 
+    resl <- getBidirSigGenes(res2, fc_col='log2FoldChange.cis_tdln-ln', 
+                             padj_col='padj.cis_tdln-ln', qthresh=q_threshold, 
                              topn=top_genes)
     genes <- unlist(lapply(resl, function(i) i$ens))
     symbols <- unlist(lapply(resl, function(i) i$gene))
     if(any(is.na(symbols))) symbols[is.na(symbols)] <- genes[is.na(symbols)]
     
     ## DEG Heatmap for top 40 genes in either direction
-    phm_tops[['delta_tdln']] <- degHeatmap(
-      exprmat=assay(vsd), meta_df=meta_df,  genes=genes, 
-      genes_style='ENS', sample_order=order_idx, 
-      title=paste0("TDLN-Specific: ", celltype, "- top_", top_genes))
+    phm_tops[['cis_tdln-ln']] <- degHeatmap(
+      exprmat=assay(vsd)[,rownames(meta_df_tdln)], meta_df=meta_df_tdln,  genes=genes, 
+      genes_style='ENS', sample_order=order_idx_tdln, 
+      title=paste0("CIS_TDLN-LN: ", celltype, "- top_", top_genes),
+      annotation_colors=annotation_colors)
   }
   
   
   ## DEG Heatmap for geneset of interest
   phm_gois <- lapply(names(gois), function(goi){
-    degHeatmap(exprmat=assay(vsd), meta_df=meta_df,  genes=gois[[goi]], 
-               genes_style='SYMBOL', sample_order=order_idx, 
-               cluster_rows=TRUE, title=paste0(celltype, ": ", goi))
-    
+    degHeatmap(exprmat=assay(vsd)[,rownames(meta_df_tdln)], meta_df=meta_df_tdln,  
+               genes=gois[[goi]], genes_style='SYMBOL', sample_order=order_idx_tdln, 
+               cluster_rows=TRUE, title=paste0(celltype, ": ", goi),
+               annotation_colors=annotation_colors)
   })
   ## DEG Heatmap for top 40 genes in either direction
   if(get_interaction){
     phm_gois_interaction <- lapply(names(gois), function(goi){
       degHeatmap(
         exprmat=exprmat_fc, meta_df=meta_df_fc,  
-        genes=ens_ids[gois[[goi]]], genes_style='ENS', sample_order=c(2,1), 
+        genes=ens_ids[gois[[goi]]], genes_style='ENS', sample_order=c(1:ncol(exprmat_fc)), 
         cluster_rows=T, scale_score = FALSE,
-        title=paste0(celltype, ": interaction - ", goi)
+        title=paste0(celltype, ": interaction - ", goi),
+        annotation_colors=annotation_colors
       )
     })
     phm_gois <- c(phm_gois, phm_gois_interaction)
@@ -601,27 +648,29 @@ sft_df <- data.frame(sft$fitIndices) %>%
 
 ## Computer the network modules and eigengenes from the adjacency matrix using TOM signed
 pwr <- 16
+cor <- WGCNA::cor
 bwnet <- blockwiseModules(normalized_array,
                           maxBlockSize = 5000, 
                           TOMType = "signed",
                           power=pwr,
                           numericLabels = TRUE,
                           randomSeed = 1234)
+cor<-stats::cor
 module_eigengenes <- bwnet$MEs
 
-# plot adjacency network (https://www.biostars.org/p/402720/)
-adjacency <- adjacency(normalized_array, power=pwr, type="signed")
-tom <- TOMsimilarity(adjacency)
-tom[tom > 0.1] = 1
-tom[tom != 1] = 0
-network <- graph.adjacency(tom)
-network <- simplify(network)  # removes self-loops
-V(network)$color <- bwnet$colors
-network <- delete.vertices(network, degree(network)==0)
+# # plot adjacency network (https://www.biostars.org/p/402720/)
+# adjacency <- adjacency(normalized_array, power=pwr, type="signed")
+# tom <- TOMsimilarity(adjacency)
+# tom[tom > 0.1] = 1
+# tom[tom != 1] = 0
+# network <- graph.adjacency(tom)
+# network <- simplify(network)  # removes self-loops
+# V(network)$color <- bwnet$colors
+# network <- delete.vertices(network, degree(network)==0)
 # plot(network, layout=layout.fruchterman.reingold(network), 
 #      edge.arrow.size = 0.2)
 
-## C) Associating eigengene modules with significant interaction DEGs
+## C) Associating eigengene modules with significant interaction DEGs ------------------------------------
 gene_modules <- lapply(names(res_dds), function(res_id){
   res <- res_dds[[res_id]]$res
   
@@ -631,27 +680,32 @@ gene_modules <- lapply(names(res_dds), function(res_id){
     mutate("hugo"=gene_ids[gene]) %>%
     mutate("entrez"=ens2entrez_ids[gene]) %>%
     inner_join(res %>%
-                 select(c("ens", "log2FoldChange.int", "padj.int")),
-               by=c("gene" = "ens"))
+                 select(c("ens", "log2FoldChange.interaction",
+                          "log2FoldChange.cis_tdln-ln",
+                          "padj.interaction", "padj.cis_tdln-ln")),
+               by=c("gene" = "ens")) 
   
   # Summarize the p-adjusted values per eigengene module
   module_deg <- gene_module_key %>% 
     group_by(module) %>%
-    dplyr::summarise(mean=mean(padj.int, na.rm=T), 
-                     sd=sd(padj.int, na.rm=T), 
-                     median=median(padj.int, na.rm=T),
-                     q95=quantile(padj.int, 0.95, na.rm=T),
+    dplyr::summarise(mean_lfc_cis=mean(`log2FoldChange.cis_tdln-ln`, na.rm=T),
+                     sd_lfc_cis=sd(`log2FoldChange.cis_tdln-ln`, na.rm=T),
+                     mean_lfc_int=mean(`log2FoldChange.interaction`, na.rm=T),
+                     sd_lfc_int=sd(`log2FoldChange.interaction`, na.rm=T),
+                     q95_cis=quantile(`padj.cis_tdln-ln`, 0.95, na.rm=T),
+                     q95_int=quantile(padj.interaction, 0.95, na.rm=T),
                      n=n()) %>%
-    arrange(q95)
+    arrange(q95_int+q95_cis)
   
   # Subset for the gene_modules that have a Q95 padj value < 0.05
   sig_modules <- gene_module_key %>%
     group_by(module) %>%
     filter(module %in% (module_deg %>% 
-                          filter(q95 < 0.05) %>%
+                          filter(q95_int < 0.2 & q95_cis < 0.2) %>%
                           select(module) %>% 
                           unlist())) %>%
     group_split()
+  names(sig_modules) <- sapply(sig_modules, function(i) unique(i$module))
   
   
   ## D) Overrepresentation analysis of modules -----------------------------------
@@ -666,23 +720,75 @@ gene_modules <- lapply(names(res_dds), function(res_id){
   ## Select the genes of module X
   module_ids <- sapply(sig_modules, function(i) unique(i$module))
   module_oras <- lapply(setNames(module_ids,module_ids), function(me){
+    print(paste0(res_id, ": ", me, "..."))
     module_genes <- gene_module_key %>%
       dplyr::filter(module == me)
     
     oras <- iterateMsigdb(species='Mus musculus', fun=oraFun, 
                           entrez_genes=module_genes$entrez)
-    oras <- lapply(oras, summarizeOra)
-    return(do.call(rbind, oras))
+    oras <- lapply(oras, summarizeOra, keep_genes=TRUE)
+    
+    # Get the LFC for all the genes composing that geneset
+    oras <- lapply(oras, function(ora){
+      if(nrow(ora)==0) return(ora)
+      
+      lfc_df <- sapply(ora$geneID, function(genes){
+        lfcs <- genes %>% 
+          strsplit(., split="/") %>%
+          as.data.frame() %>%
+          rename_with(~ "entrez") %>%
+          inner_join(gene_module_key,
+                     by=c("entrez" = "entrez")) %>%
+          summarise(mean_lfc_cis=mean(`log2FoldChange.cis_tdln-ln`, na.rm=T),
+                    sd_lfc_cis=sd(`log2FoldChange.cis_tdln-ln`, na.rm=T),
+                    mean_lfc_int=mean(`log2FoldChange.interaction`, na.rm=T),
+                    sd_lfc_int=sd(`log2FoldChange.interaction`, na.rm=T)) %>%
+          as.numeric()
+      }) %>% 
+        t() %>% 
+        as.data.frame() %>%
+        rename_with(~ c('mean_lfc_cis', 'sd_lfc_cis', 'mean_lfc_int', 'sd_lfc_int'))
+      
+      return(as.data.frame(cbind(ora, lfc_df)))
+    })
+    return(plyr::rbind.fill(oras))
   })
-  saveRDS(module_oras, file=file.path(outdir, "rds", paste0(res_id, "_coexpression_modules.rds")))
+  saveRDS(module_oras, file=file.path(outdir, "rds", paste0(res_id, "_coexpression_modules_intAndCis.rds")))
+  
+  
+  ## Get frequent word combinations of Gene sets for each module
+  n <- 6
+  freqWords <- function(textv, split="_", word_pairs=F, n=5){
+    if(length(textv)==0) return('')
+    words <- unlist(strsplit(textv, split=split))
+    if(word_pairs) words <- paste(words, lead(words), sep=":")
+    paste(names(
+      head(sort(table(words), decreasing = T), n)), 
+      collapse=",")
+  }
+  freq_word_pairs <- sapply(module_oras, function(i){
+    freqWords(textv=i$ID, split="_", word_pairs=TRUE, n=n)
+  })
+  freq_words <- sapply(module_oras, function(i){
+    freqWords(textv=i$ID, split="_", word_pairs=FALSE, n=n)
+  })
+  
+  module_deg_anno <- module_deg %>% 
+    filter(module %in% names(sig_modules)) %>%
+    mutate("freq_w"=freq_words[names(sig_modules)]) %>%
+    mutate("freq_w_pairs"=freq_word_pairs[names(sig_modules)])
   
   module_ora <- do.call(rbind, module_oras) %>%
     as.data.frame() %>%
-    mutate("module"=rep(names(module_oras), sapply(module_oras, nrow)))
-  write.table(module_ora, file=file.path(outdir, paste0(res_id, "coexpression_module.csv")),
+    mutate("module"=rep(names(module_oras), sapply(module_oras, nrow))) %>%
+    select(-c(geneID))
+  
+  write.table(module_ora, file=file.path(outdir, paste0(res_id, "coexpression_module_intAndCis.csv")),
               sep=",", quote=F, row.names = F, col.names = T)
-  return(list("ora"=module_oras, "modules"=sig_modules))
+  return(list("ora"=module_oras, "modules"=sig_modules,
+              "anno"=module_deg_anno))
 })
+names(gene_modules) <- names(res_dds)
 
 
 
