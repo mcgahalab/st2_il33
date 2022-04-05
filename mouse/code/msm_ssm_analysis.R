@@ -68,9 +68,10 @@ getBidirSigGenes <- function(res, fc_col='log2FoldChange', padj_col='padj',
 # It will subset the data for the genes that overlap, and create a pheatmap using
 # the metafile provided for annotation
 degHeatmap <- function(exprmat, genes, meta_df=NULL, genes_style='ENS', 
+                       samples=NULL,
                        sample_order=NULL, cluster_rows=FALSE, 
                        cluster_cols=FALSE, title='', scale_score=TRUE,
-                       ...){
+                       scale_time='pre', max_rownames=30, ...){
   if(any(duplicated(genes))) genes <- genes[-which(duplicated(genes))]
   ens_genes <- if(genes_style=='SYMBOL') ens_ids[genes] else genes
   sym_genes <- if(genes_style=='SYMBOL') genes else gene_ids[genes]
@@ -89,17 +90,34 @@ degHeatmap <- function(exprmat, genes, meta_df=NULL, genes_style='ENS',
   }
   
   # Create gene expression matrix subset
-  if(is.null(sample_order)) sample_order <- c(1:ncol(exprmat))
-  gene_heatmap <- exprmat[ens_genes,sample_order]
-  gene_heatmap2 <- if(scale_score) as.data.frame(t(apply(gene_heatmap, 1, scale))) else gene_heatmap
-  colnames(gene_heatmap2) <- colnames(gene_heatmap)
+  if(scale_time == 'pre'){
+    print('scaling prior to subsetting')
+    gene_heatmap0 <- if(scale_score) as.data.frame(t(apply(exprmat[ens_genes,,drop=F], 1, scale))) else exprmat[ens_genes,,drop=F]
+    colnames(gene_heatmap0) <- colnames(exprmat)
+    gene_heatmap0 <- if(is.null(samples)) gene_heatmap0 else gene_heatmap0[,samples,drop=F]
+    
+    if(is.null(sample_order)) sample_order <- c(1:ncol(exprmat))
+    gene_heatmap2 <- gene_heatmap0[,sample_order,drop=F]
+    colnames(gene_heatmap2) <- colnames(gene_heatmap0)[sample_order]
+    
+  } else {
+    print('scaling after subsetting')
+    if(is.null(sample_order)) sample_order <- c(1:ncol(exprmat))
+    gene_heatmap <- exprmat[ens_genes,sample_order]
+    gene_heatmap2 <- if(scale_score) as.data.frame(t(apply(gene_heatmap, 1, scale))) else gene_heatmap
+    colnames(gene_heatmap2) <- colnames(gene_heatmap)
+  }
   rownames(gene_heatmap2) <- sym_genes
   
   if(any(is.na(gene_heatmap2))) gene_heatmap2[is.na(gene_heatmap2)] <- 0
+  if(!is.null(meta_df)){
+    meta_df <- meta_df[sample_order,,drop=F]
+  }
   phm <- pheatmap(gene_heatmap2, 
                   cluster_rows=cluster_rows, cluster_cols=cluster_cols,
-                  show_rownames=T, show_colnames=F,
-                  annotation_col=if(!is.null(meta_df)) meta_df[sample_order,,drop=F] else meta_df,
+                  show_rownames=if(nrow(gene_heatmap2) > max_rownames) F else T, 
+                  show_colnames=F,
+                  annotation_col=if(!is.null(meta_df)) meta_df else NULL,
                   main=title,
                   ...)
   return(phm)
@@ -196,7 +214,8 @@ if(any(colnames(cts) != rownames(coldata))){
 coldata$lnstatus <-factor(gsub("-.*", "", coldata$condition), c("LN", "TDLN"))
 coldata$treatment <- factor(gsub(".*-(.*)_.*", "\\1", coldata$condition), c('PBS', 'CIS'))
 coldata$celltype <- gsub(".*_", "", coldata$condition)
-coldata_l <- split(coldata, coldata$celltype)
+coldata_l <- c(split(coldata, coldata$celltype), 
+               list("All"=coldata))
 
 celltypes <- setNames(names(coldata_l), names(coldata_l))
 resl <- lapply(celltypes, function(celltype){
@@ -342,6 +361,19 @@ if(do_demo){
 
 #################################
 #### 3) Gene set of interest ####
+resl <- readRDS(file.path(outdir, "rds", "resl.rds"))
+
+st4_inflammatory_goi <- read.csv("/cluster/projects/mcgahalab/data/mcgahalab/sara_MSM_SSM/ref/st4_inflammatory.csv",
+                                 sep=",", header = F) %>%
+  unlist() %>% as.character() %>% str_to_title()
+st4_antiinflammatory_goi <- read.csv("/cluster/projects/mcgahalab/data/mcgahalab/sara_MSM_SSM/ref/st4_antiinflammatory.csv",
+                                 sep=",", header = F) %>%
+  unlist() %>% as.character() %>% str_to_title()
+
+list2_goi <- read.csv("/cluster/projects/mcgahalab/data/mcgahalab/sara_MSM_SSM/ref/list2.csv",
+                      sep=",", header = F) %>%
+  unlist() %>% as.character() %>% str_to_title()
+
 inflammatory_goi <- c("CCR2", "IL18", "IL15", "IRF5", "CXCL11", "CXCL10", "IL6", 
                       "IL1B", "IL1A", "PTGES", "IL15RA", "RELA", "TNF", "CD86", "CD80", 
                       "SOCS3", "NLRP3", "SELL", "STAT1", "CD40", "Slc7a2", 
@@ -363,22 +395,26 @@ ainf2 <- c('Tgfb1', 'Chil3', 'Tnfsf10', 'Socs2', 'Nr1h3', 'Pparg', 'Retnla', 'cx
            'Atf5', 'Atf6', 'cyp1b1', 'Gcn1')
 anti_inflammatory_goi <- str_to_title(c(anti_inflammatory_goi, ainf2))
 
+gois <- list("anti-inflammatory"=anti_inflammatory_goi, 
+             "inflammatory"=inflammatory_goi,
+             "st4_antiinflammatory_goi"=st4_antiinflammatory_goi,
+             "st4_inflammatory_goi"=st4_inflammatory_goi,
+             "list2"=list2_goi)
+
 inflammatory_goi[which(!inflammatory_goi %in% gene_ids)]
 anti_inflammatory_goi[which(!anti_inflammatory_goi %in% gene_ids)]
+list2_goi[which(!list2_goi %in% gene_ids)]
 lapply(names(resl), function(ct){
-  res <- resl[[ct]]$res
-  res_inflammatory <- res[res$gene %in% inflammatory_goi,]
-  res_anti_inflammatory <- res[res$gene %in% anti_inflammatory_goi,]
-  write.table(res_anti_inflammatory, 
-              file=file.path(outdir, paste0(ct, "_degs_anti_inflammatory.csv")), 
-              col.names = T, row.names = F, quote=F, sep=",")
-  write.table(res_inflammatory, 
-              file=file.path(outdir,  paste0(ct, "_degs_inflammatory.csv")), 
-              col.names = T, row.names = F, quote=F, sep=",")
+  lapply(names(gois), function(goi_id){
+    res <- resl[[ct]]$res
+    res_goi <- res[res$gene %in% gois[[goi_id]],]
+    write.table(res_goi, 
+                file=file.path(outdir, paste0(ct, "_degs_", goi_id, ".csv")), 
+                col.names = T, row.names = F, quote=F, sep=",")
+  })
 })
 
-saveRDS(list("anti-inflammatory"=anti_inflammatory_goi, 
-             "inflammatory"=inflammatory_goi),
+saveRDS(gois,
         file=file.path(outdir, "goi.rds"))
 
 ##################################
@@ -389,9 +425,12 @@ gois <- readRDS(file.path(outdir, "goi.rds"))
 
 ## Params
 top_genes <- 50
+print_n <- 1000
 q_threshold <- 0.05
 get_interaction=TRUE
 get_delta_tdln=TRUE
+subset_sig_goi=FALSE # Subset the gois for just the genes that are significant in our deg analysis
+scale_time='post' # z-scale the gene expression 'pre' or 'post' subsetting for samples to plot
 
 ## Create heatmaps of DEGs, based on the interaction between:
 # 1) DEG of CIS: TDLN-LN
@@ -403,12 +442,30 @@ phms <- lapply(names(res_dds), function(celltype, get_delta_tdln, get_interactio
   dds <- res_dds[[celltype]]$dds_lnBase # DESeq object
   
   # Get cnts table 
+  cnts0 <- counts(dds)
   vsd <- vst(dds)
   cnts <- counts(dds,normalized=TRUE)
   meta_df <- as.data.frame(colData(dds)[,c("lnstatus","treatment", "celltype")])
   order_idx <- with(meta_df, order(celltype, lnstatus, treatment))
   meta_df_tdln <- split(meta_df, meta_df$lnstatus)$TDLN
   order_idx_tdln <- with(meta_df_tdln, order(celltype, lnstatus, treatment))
+
+  # ((t(cnts0[ens_ids[c('Il10ra', 'Rela', 'Il12b')],]) / colSums(cnts0)) * 1e6)
+  # t(cnts[ens_ids[c('Il10ra', 'Rela', 'Il12b')],])
+  
+  # Subset gois if interested in only genes that are significant according to 
+  # our DEG analysis
+  if(subset_sig_goi){
+    res_sig <- res[which(with(res, (`padj.interaction` < q_threshold) & 
+                                (`padj.cis_tdln-ln` < q_threshold))),]
+    gois_sub <- lapply(names(gois), function(goi){
+      gois[[goi]][which(gois[[goi]] %in% res_sig$gene)]
+    })
+    names(gois_sub) <- names(gois)
+  }else {
+    gois_sub <- gois
+  }
+  
   
   phm_tops <- list()
   # Get top X significant genes from DESeq results; split based on direction
@@ -434,16 +491,18 @@ phms <- lapply(names(res_dds), function(celltype, get_delta_tdln, get_interactio
                              "group"=colnames(exprmat_fc), 
                              row.names = colnames(exprmat_fc))
     phm_tops[['interaction_sample']] <- degHeatmap(
-      exprmat=assay(vsd)[,rownames(meta_df_tdln)], meta_df=meta_df_tdln,  
+      exprmat=assay(vsd), samples=rownames(meta_df_tdln), meta_df=meta_df_tdln,  
       genes=genes, genes_style='ENS', sample_order=order_idx_tdln, 
       title=paste0("CIS(TDLN-LN) & Treatment: ", celltype, "-  top_", top_genes),
-      annotation_colors=annotation_colors
+      annotation_colors=annotation_colors, max_rownames = print_n,
+      scale_time=scale_time
     )
     phm_tops[['interaction_fc']] <- degHeatmap(
       exprmat=exprmat_fc, meta_df=meta_df_fc,  
       genes=genes, genes_style='ENS', sample_order=c(1:ncol(exprmat_fc)), 
       title=paste0("CIS(TDLN-LN) & Treatment: ", celltype, "-  top_", top_genes),
-      scale_score = FALSE, annotation_colors=annotation_colors
+      scale_score = FALSE, annotation_colors=annotation_colors, 
+      max_rownames = print_n, scale_time=scale_time
     )
   }
   
@@ -459,29 +518,35 @@ phms <- lapply(names(res_dds), function(celltype, get_delta_tdln, get_interactio
     
     ## DEG Heatmap for top 40 genes in either direction
     phm_tops[['cis_tdln-ln']] <- degHeatmap(
-      exprmat=assay(vsd)[,rownames(meta_df_tdln)], meta_df=meta_df_tdln,  genes=genes, 
+      exprmat=assay(vsd), samples=rownames(meta_df_tdln), 
+      meta_df=meta_df_tdln,  genes=genes, 
       genes_style='ENS', sample_order=order_idx_tdln, 
       title=paste0("CIS_TDLN-LN: ", celltype, "- top_", top_genes),
-      annotation_colors=annotation_colors)
+      annotation_colors=annotation_colors, max_rownames = print_n, 
+      scale_time=scale_time)
   }
   
-  
   ## DEG Heatmap for geneset of interest
-  phm_gois <- lapply(names(gois), function(goi){
-    degHeatmap(exprmat=assay(vsd)[,rownames(meta_df_tdln)], meta_df=meta_df_tdln,  
-               genes=gois[[goi]], genes_style='SYMBOL', sample_order=order_idx_tdln, 
-               cluster_rows=TRUE, title=paste0(celltype, ": ", goi),
-               annotation_colors=annotation_colors)
+  phm_gois <- lapply(names(gois_sub), function(goi){
+    if(length(gois_sub[[goi]]) <= 1) return(NULL)
+    degHeatmap(exprmat=assay(vsd), samples=rownames(meta_df_tdln), 
+               meta_df=meta_df_tdln,  sample_order=order_idx_tdln, 
+               genes=gois_sub[[goi]], genes_style='SYMBOL', 
+               cluster_rows=F, title=paste0(celltype, ": ", goi),
+               annotation_colors=annotation_colors, max_rownames = print_n, 
+               scale_time=scale_time)
   })
   ## DEG Heatmap for top 40 genes in either direction
   if(get_interaction){
-    phm_gois_interaction <- lapply(names(gois), function(goi){
+    
+    phm_gois_interaction <- lapply(names(gois_sub), function(goi){
       degHeatmap(
         exprmat=exprmat_fc, meta_df=meta_df_fc,  
-        genes=ens_ids[gois[[goi]]], genes_style='ENS', sample_order=c(1:ncol(exprmat_fc)), 
-        cluster_rows=T, scale_score = FALSE,
+        genes=ens_ids[gois_sub[[goi]]], genes_style='ENS', sample_order=c(1:ncol(exprmat_fc)), 
+        cluster_rows=F, scale_score = FALSE,
         title=paste0(celltype, ": interaction - ", goi),
-        annotation_colors=annotation_colors
+        annotation_colors=annotation_colors, max_rownames = print_n, 
+        scale_time=scale_time
       )
     })
     phm_gois <- c(phm_gois, phm_gois_interaction)
@@ -491,8 +556,8 @@ phms <- lapply(names(res_dds), function(celltype, get_delta_tdln, get_interactio
 }, get_interaction=get_interaction, get_delta_tdln=get_delta_tdln)
 names(phms) <- names(res_dds)
 
-pdf(file.path(outdir, paste0("heatmap_top", top_genes, ".pdf")), 
-    width = 12, height = 10)
+pdf(file.path(outdir, paste0("heatmap_top", top_genes, ".subset_", subset_sig_goi, ".pdf")), 
+    width = 12, height = 20)
 phm_tops <- unlist(lapply(phms, function(i) i$phm_tops), recursive = F)
 lapply(phm_tops, function(i){
   grid::grid.newpage()
@@ -751,7 +816,9 @@ gene_modules <- lapply(names(res_dds), function(res_id){
       
       return(as.data.frame(cbind(ora, lfc_df)))
     })
-    return(plyr::rbind.fill(oras))
+    oras <- plyr::rbind.fill(oras) %>%
+      select(-c(geneID))
+    return(oras)
   })
   saveRDS(module_oras, file=file.path(outdir, "rds", paste0(res_id, "_coexpression_modules_intAndCis.rds")))
   
@@ -780,8 +847,7 @@ gene_modules <- lapply(names(res_dds), function(res_id){
   
   module_ora <- do.call(rbind, module_oras) %>%
     as.data.frame() %>%
-    mutate("module"=rep(names(module_oras), sapply(module_oras, nrow))) %>%
-    select(-c(geneID))
+    mutate("module"=rep(names(module_oras), sapply(module_oras, nrow)))
   
   write.table(module_ora, file=file.path(outdir, paste0(res_id, "coexpression_module_intAndCis.csv")),
               sep=",", quote=F, row.names = F, col.names = T)
@@ -791,9 +857,34 @@ gene_modules <- lapply(names(res_dds), function(res_id){
 names(gene_modules) <- names(res_dds)
 
 
+gene_modules_df <- unlist(gene_modules, recursive=F)
+gene_modules_df <- gene_modules_df[grep("anno$", names(gene_modules_df))] 
+gene_modules_df <- gene_modules_df %>%
+  rbind.fill() %>% 
+  as.data.frame() %>%
+  mutate("celltype"=rep(gsub(".anno", "", names(gene_modules_df)), 
+                        sapply(gene_modules_df, nrow)))
 
-
-
+pdf(file.path(outdir, "coexpression_ORA_genesets.pdf"), height = 8)
+lapply(c("MSM", "SSM"), function(ct){
+  gene_modules_df %>% 
+    select(c('module', 'mean_lfc_cis', 'mean_lfc_int', 'freq_w_pairs', 'celltype')) %>%
+    melt() %>%
+    filter(celltype==ct) %>%
+    mutate(variable=gsub("mean_lfc_", "", variable) %>%
+             gsub("cis", "CIS_TDLN-LN", .) %>%
+             gsub("int", "CIS-Treatment", .)) %>%
+    mutate(freq_w_pairs=gsub(",", "\n", freq_w_pairs)) %>%
+    ggplot(., aes(y=freq_w_pairs, x=value, fill=variable)) +
+      geom_bar(position="dodge", stat="identity") + 
+      facet_grid(rows=vars(module), scales = "free") +
+      xlim(-5,5) +
+      theme(axis.text.x = element_text(size=5)) +
+      ggtitle(ct) + 
+      xlab("mean-LFC") + ylab("") +
+      theme_classic()
+})
+dev.off()
 
 ##################################################################################
 #### 6. single-sample GSEA on each cell-type using the top Response gene-sets ####
