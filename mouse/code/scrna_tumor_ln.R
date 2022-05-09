@@ -1,3 +1,4 @@
+library(msigdbr)
 library(BiocParallel)
 library(GenomicFeatures)
 library(harmony)
@@ -31,6 +32,17 @@ gtf_file <- '/cluster/projects/mcgahalab/ref/genomes/mouse/GRCm38/GTF/genome.gtf
 datadir <- file.path(PDIR, "data")
 outdir <- file.path(PDIR, "results")
 groups <- list.files(datadir)
+
+# Create ENZ -> SYMBOL mapping key
+genome_gse <- org.Mm.eg.db
+txby <- keys(genome_gse, 'SYMBOL')
+ens2sym_ids <- mapIds(genome_gse, keys=txby, column='ENSEMBL',
+                  keytype='SYMBOL', multiVals="first")
+sym2ens_ids <- ens2sym_ids
+sym2entrez_ids <- mapIds(genome_gse, keys=txby, column='ENTREZID',
+                         keytype='SYMBOL', multiVals="first")
+entrez2sym_ids <- setNames(names(sym2entrez_ids), sym2entrez_ids)
+
 
 doublet_quantile_cutoff <- 0.95
 
@@ -115,7 +127,9 @@ anno_geneset <- list("DC"=list("up"=c("CLE4C", "CLEC10A", "CST3", "FCER1A", "H2-
 
 ###################
 #### Functions ####
-
+source("~/git/mini_projects/mini_functions/wgcnaComplexHeatmap.R")
+source("~/git/mini_projects/mini_functions/iterateMsigdb.R")
+source("~/git/mini_projects/mini_functions/linearModelEigen.R")
 
 ####################################
 #### 0.a Create Seurat objects  ####
@@ -547,8 +561,186 @@ if(visualize){
 
 saveRDS(seu, file=file.path(datadir, "seurat_obj", "seu_anno.rds"))
 
+###################################################
+#### 2.a Split Tumor and LN; Visualize samples ####
+dir.create(file.path(outdir, "dimplot"), showWarnings = F)
+
+if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "seu_anno.rds"))
+dir.create(file.path(outdir, "markers"), showWarnings = F)
+
+#split into tumor-ln, re-run umap on this smaller subset and re-cluster
+seu$LN_Tumor <- gsub("_.*", "", seu$orig.ident)
+ln_tumor <- unique(seu$LN_Tumor)
+
+# seu_ln <- subset(seu, idents='LN')
+# seu_tumor <- subset(seu, idents='Tumor')
+
+# Re-run PCA and UMAP on the subsetted SCT assays
+seu_ln_tumor <- lapply(setNames(ln_tumor, ln_tumor), function(ln_or_tumor){
+  Idents(seu) <- 'LN_Tumor'
+  seu_i <- subset(seu, idents=ln_or_tumor)
+  DefaultAssay(seu_i) <- 'SCT'
+  
+  #Confirm #PC's determined explain > 95% of variance
+  seu_i <- RunPCA(seu_i, npcs=50, verbose = FALSE)
+  stdev <- seu_i@reductions$pca@stdev
+  var <- stdev^2
+  PCNum <-  min(which(cumsum(var)/sum(var) >= 0.9))
+  seu_i <- FindNeighbors(object = seu_i, dims = 1:PCNum)
+  seu_i <- RunUMAP(object = seu_i, dims = 1:PCNum, n.epochs=200L)
+  seu_i <- FindClusters(object = seu_i, resolution = 1.2)
+  
+  return(seu_i)
+})
+
+seu_markers_ln_tumor <- lapply(seu_ln_tumor, function(seu_i){
+  markers <- FindAllMarkers(object = seu_i, only.pos = TRUE, 
+                            min.pct = 0.25, thresh.use = 0.25, 
+                            test.use='wilcox', slot='data')
+  markers
+})
+
+seu_grp_markers <- lapply(seu_ln_tumor, function(seu_i){
+  seu_i$timepoint <- sapply(strsplit(seu_i$orig.ident, split="_"), function(i) i[3])
+  seu_i$treatment <- sapply(strsplit(seu_i$orig.ident, split="_"), function(i) i[2])
+  seu_i$tissue_treatment <- with(seu_i@meta.data, paste0(LN_Tumor, "_", treatment))
+  
+  DefaultAssay(seu_i) <- 'RNA'
+  Idents(seu_i) <- 'bp.fine.cell2'
+  tissue_treatment <- unique(seu_i$tissue_treatment)
+  ct_markers <- lapply(setNames(tissue_treatment,tissue_treatment), function(sub){
+    
+    ids <- table(seu_i@meta.data[,c('tissue_treatment', 'orig.ident')])[sub,]
+    ids <- ids[which(ids!=0)]
+    
+    celltypes <- levels(Idents(seu_i))
+    lapply(setNames(celltypes, celltypes), function(celltype){
+      print(paste0(celltype, "..."))
+      tryCatch({
+        markers <- FindMarkers(seu_i, slot = "data",test.use = "wilcox", 
+                               ident.1=names(ids)[1], ident.2=names(ids)[2], 
+                               group.by='orig.ident', subset.ident=celltype) %>%
+          filter(p_val_adj < 0.05)
+        
+        c2 <- iterateMsigdb(species='Mus musculus', 
+                            lfc_v=setNames(markers$avg_log2FC, sym2entrez_ids[rownames(markers)]), 
+                            fun=gseaFun,
+                            msig_lvls=list('C2'=list('CP:REACTOME')))
+        return(list("markers"=markers, "gsea"=as.data.frame(c2[[1]][[1]][,4:10])))
+      }, error=function(e){NULL})
+    })
+  })
+  return(ct_markers)
+})
+
+pdf(file.path(outdir, "clusters", "markers_deg.pdf"), width = 15, width = 10)
+pdf(file.path("~/xfer", "markers_deg.pdf"), height = 20, width = 10)
+lapply(names(seu_ln_tumor), function(id){
+  markers_i <- seu_markers_ln_tumor[[id]]
+  seu_i <- seu_ln_tumor[[id]]
+  
+  top.markers <- do.call(rbind, lapply(split(markers_i, markers_i$cluster), head, n=12L))
+  DoHeatmap(seu_i, features = top.markers$gene, raster=T, 
+            group.by='seurat_clusters') + ggtitle(id)
+
+})
+dev.off()
+
+# Calculate proportion of cell-types per sample
+clusters <- list('seurat_clusters'=c("orig.ident", 'seurat_clusters'), 
+                 'bp.fine.cell2'=c("orig.ident", 'bp.fine.cell2'),
+                 'clusters_cell'=c("seurat_clusters", 'bp.fine.cell2'))
+celltype_props <- lapply(clusters, function(cl){
+  celltype_prop <- lapply(seu_ln_tumor, function(seu_i){
+    table(seu_i@meta.data[,c(cl[1], cl[2])]) %>% 
+      apply(., 1, function(i) i / sum(i)) %>%
+      round(., 6) %>% 
+      as.data.frame() %>%
+      tibble::rownames_to_column(., 'cellType')
+  }) %>% 
+    Reduce(function(x,y) merge(x,y, by='cellType', all=T), .) %>%
+    tibble::column_to_rownames(., 'cellType')
+  celltype_prop[is.na(celltype_prop)] <- 0
+  return(celltype_prop)
+})
+celltype_props <- celltype_props[-3]
+
+
+.plotIt <- function(x) {
+  x %>%
+    round(., 3) %>%
+    melt() %>%
+    rename_with(., ~ c('Sample', 'cellType', 'proportion')) %>%
+    left_join(ref_tbl, 
+              by=c('Sample'='Sample')) %>%
+    mutate(Sample=factor(Sample, levels=ref_lvls)) %>%
+    ggplot(., aes(x=Sample, y=cellType, fill=proportion)) +
+    facet_grid(cols=vars(join), scales='free') +
+    geom_tile() +
+    scale_fill_gradientn(colors = colorPal(10)) +
+    theme(axis.text.x = element_text(angle = 90))
+}
+winsorize <- function(x, probs=c(0.05, 0.95)) {
+  q <- quantile(as.numeric(x), probs)
+  x[x<q[1]] <- q[1]
+  x[x>q[2]] <- q[2]
+  return(x)
+}
+
+pdf(file.path(outdir, "dimplot", "cellType_proportions.pdf"), width = 15)
+col <- c('#feebe2', '#dd3497', '#7a0177')
+colorPal <- grDevices::colorRampPalette(col)
+# celltype_prop %>% t() %>%
+ref_tbl <- colnames(celltype_props) %>% 
+  strsplit(., "_", .) %>% 
+  do.call(rbind, .) %>% 
+  as.data.frame() %>%
+  mutate(Sample=colnames(celltype_prop))
+ref_tbl$join <- with(ref_tbl, paste0(V1, "_", V2))
+ref_tbl$V1 <- factor(ref_tbl$V1, c('LN', 'Tumor'))
+ref_tbl$V2 <- factor(ref_tbl$V2, c('WT', 'KO'))
+ref_tbl$V3 <- factor(ref_tbl$V3, c('PBS', '72h'))
+ref_lvls <- ref_tbl[with(ref_tbl, order(V1, V2, V3)),]$Sample
+  
+# apply(celltype_prop, 1, function(i) scales::rescale(i, to=c(0,1))) %>%
+gg_cps <- lapply(celltype_props, function(celltype_prop){
+  mad_gg <- apply(celltype_prop, 1, function(i) {
+    mad_i <- (i-median(i))/mad(i)
+    if(any(is.nan(mad_i) | is.infinite(mad_i))){
+      mad_i[which(is.nan(mad_i) | is.infinite(mad_i))] <- 0
+    }
+    return(mad_i)
+  }) %>% 
+    winsorize(., probs=c(0, 0.99)) %>% 
+    .plotIt() + ggtitle("MAD proportions")
+ 
+ abs_gg <- celltype_prop  %>% 
+    t() %>% .plotIt() + ggtitle("Absolute proportions") + theme()
+ 
+ plot_grid(mad_gg, abs_gg, nrow=1)
+})
+gg_cps
+dev.off()
+
+pdf(file.path(outdir, "dimplot", "dimplot_subsample.pdf"), width = 15)
+DimPlot(seu_ln_tumor$Tumor, label=TRUE, repel=TRUE, reduction='umap',
+        group.by='bp.fine.cluster2', pt.size=0.5, split.by='orig.ident')
+DimPlot(seu_ln_tumor$Tumor, label=TRUE, repel=TRUE, reduction='umap',
+        group.by='seurat_clusters', pt.size=0.5, split.by='orig.ident')
+DimPlot(seu_ln_tumor$LN, label=TRUE, repel=TRUE, reduction='umap',
+        group.by='bp.fine.cluster2', pt.size=0.5, split.by='orig.ident')
+DimPlot(seu_ln_tumor$LN, label=TRUE, repel=TRUE, reduction='umap',
+        group.by='seurat_clusters', pt.size=0.5, split.by='orig.ident')
+dev.off()
+
+
+
+
+
+saveRDS(seu, file=file.path(datadir, "seurat_obj", "seu_anno.rds"))
+
 ########################################################################
-#### 2.a Split by cell-type and calculate differential between sets ####
+#### 2.b Split by cell-type and calculate differential between sets ####
 if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "seu_anno.rds"))
 dir.create(file.path(outdir, "markers"), showWarnings = F)
 
@@ -625,7 +817,7 @@ if(visualize){
 
 
 ###########################################
-#### 2.b Slingshot trajectory analysis ####
+#### 2.c Slingshot trajectory analysis ####
 if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "seu_anno.rds"))
 dir.create(file.path(outdir, "trajectory"), showWarnings = F)
 
@@ -636,6 +828,15 @@ seu <- RunPCA(seu, npcs=200, verbose = FALSE)
 sce <- as.SingleCellExperiment(seu)
 sce <- slingshot(sce, clusterLabels = 'orig.ident', reducedDim = "PCA",
                  allow.breaks = FALSE)
+
+
+
+
+
+FindMarkers(seu,
+            )
+
+
 
 ################################################################
 #### OUTDATED - 7.a) DEG on Markers identifying INF for each cell type ####
