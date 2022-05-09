@@ -1,5 +1,6 @@
 ## Sara's MSM_SSM project
 library(WGCNA)
+library(cowplot)
 library(igraph)
 library(ggplot2)
 library(reshape2)
@@ -12,20 +13,29 @@ library(clusterProfiler)
 library(enrichplot)
 library(ggplot2)
 library(msigdbr)
+library(SCENIC)
+
+# SCENIC params
+scenic_org_code <- 'mgi'
+rcis_db <- '/cluster/projects/mcgahalab/ref/scenic/mm10__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather'
 
 # Create ENZ -> SYMBOL mapping key
 genome_gse <- org.Mm.eg.db
 txby <- keys(genome_gse, 'ENSEMBL')
 gene_ids <- mapIds(genome_gse, keys=txby, column='SYMBOL',
                    keytype='ENSEMBL', multiVals="first")
+ens2sym_ids <- gene_ids
 ens2entrez_ids <- mapIds(genome_gse, keys=txby, column='ENTREZID',
                          keytype='ENSEMBL', multiVals="first")
+entrez2ens_ids <- setNames(names(ens2entrez_ids), ens2entrez_ids)
 
 txby <- keys(genome_gse, 'SYMBOL')
 ens_ids <- mapIds(genome_gse, keys=txby, column='ENSEMBL',
                    keytype='SYMBOL', multiVals="first")
+sym2ens_ids <- ens_ids
 sym2entrez_ids <- mapIds(genome_gse, keys=txby, column='ENTREZID',
                   keytype='SYMBOL', multiVals="first")
+entrez2sym_ids <- setNames(names(sym2entrez_ids), sym2entrez_ids)
 
 # Params
 pdir <- "/cluster/projects/mcgahalab/data/mcgahalab/sara_MSM_SSM/results"
@@ -35,8 +45,17 @@ dir.create(outdir, recursive = F, showWarnings = F)
 dir.create(file.path(outdir, "rds"), showWarnings = F)
 setwd(pdir)
 
+delta_col <- c('delta_int'='#f03b20',
+               'delta_cis'='#636363')
 celltypes <- c('MSM', 'SSM')
 celltypes <- setNames(celltypes,celltypes)
+
+#######################
+#### Functions Git ####
+source("~/git/mini_projects/mini_functions/wgcnaComplexHeatmap.R")
+source("~/git/mini_projects/mini_functions/iterateMsigdb.R")
+source("~/git/mini_projects/mini_functions/linearModelEigen.R")
+source("~/git/st2_il33/functions/msm_ssm_functions.R")
 
 ###################
 #### Functions ####
@@ -235,7 +254,7 @@ resl <- lapply(celltypes, function(celltype){
   # normalization and preprocessing
   dds <- DESeq(dds)
   
-  ## MAIN TREATMENT EFFECT
+  ## MAIN TREATMENT EFFECT 1
   # treatment_CIS_vs_PBS
   # the main treatment effect only represents the effect of treatment 
   # for the reference level of lymph-node status.
@@ -268,7 +287,7 @@ resl <- lapply(celltypes, function(celltype){
     rename_with(~ paste0(., ".interaction")) %>%
     tibble::rownames_to_column(var='ens') 
   
-  ## MAIN TREATMENT EFFECT 1
+  ## MAIN TREATMENT EFFECT 2
   # Relates to the treatment effect of CIS vs PBS for TDLN
   # - By setting the reference level to TDLN, we can evaluate CIS vs PBS
   # differences in terms of TDLN status
@@ -287,7 +306,7 @@ resl <- lapply(celltypes, function(celltype){
     rename_with(~ paste0(., ".tdln_cis-pbs")) %>%
     tibble::rownames_to_column(var='ens') 
   
-  ## MAIN TREATMENT EFFECT 2
+  ## MAIN TREATMENT EFFECT 3
   # Relates to the treatment effect of TDLN-CIS vs LN-CIS
   # - By setting the reference level to LN and subsetting for only the CIS samples, 
   # we can evaluate TDLN-CIS vs LN-CIS differences
@@ -308,10 +327,32 @@ resl <- lapply(celltypes, function(celltype){
     rename_with(~ paste0(., ".cis_tdln-ln")) %>%
     tibble::rownames_to_column(var='ens') 
   
+  ## MAIN TREATMENT EFFECT 4
+  # Relates to the treatment effect of PBS-TDLN vs PBS-LN
+  # - By setting the reference level to LN and subsetting for only the PBS samples, 
+  # we can evaluate PBS-TDLN vs PBS-LN differences
+  coldata_l[[celltype]]$lnstatus <- relevel(coldata_l[[celltype]]$lnstatus, "LN")
+  pbs_coldata <- coldata_l[[celltype]] %>% 
+    filter(treatment=='PBS')
+  dds4 <- DESeqDataSetFromMatrix(countData=cts[,rownames(pbs_coldata)],
+                                 colData=pbs_coldata,
+                                 design=as.formula('~lnstatus'))
+  
+  # remove uninformative columns
+  dds4 <- dds4[ rowSums(counts(dds4)) > 1, ]
+  dds4 <- DESeq(dds4)
+  coef <- resultsNames(dds4)[2]
+  overall_reslfc_pbs <- lfcShrink(dds4, coef=coef, type="apeglm")
+  overall_reslfc_pbs <- overall_reslfc_pbs %>%
+    as.data.frame() %>%
+    rename_with(~ paste0(., ".pbs_tdln-ln")) %>%
+    tibble::rownames_to_column(var='ens') 
+  
   ## Identify the differential genes
   res <- Reduce(function(x,y) merge(x,y,by='ens'), list(overall_reslfc_tdln, 
                                                         overall_reslfc_ln, 
                                                         overall_reslfc_cis,
+                                                        overall_reslfc_pbs,
                                                         interact_reslfc))
   res$gene <- gene_ids[res$ens]
   res$gene[is.na(res$gene)] <- res$ens[is.na(res$gene)]
@@ -580,79 +621,128 @@ gois <- readRDS(file.path(outdir, "goi.rds"))
 msig_lvls <- list('H'=list(NULL),                       # hallmark gene sets
                   'C2'=list('CP:REACTOME'),             # curated gene sets
                   'C5'=list('GO:BP', 'GO:CC', 'GO:MF'), # ontology gene sets
-                  # 'C7'=list('IMMUNESIGDB'),             # immunologic signature gene sets
-                  'C8'=list(NULL),                      # cell type signature gene sets
-                  'custom'=list('custom'=gois))           # custom genesets
+                  'C7'=list('IMMUNESIGDB'))             # immunologic signature gene sets
+                  # 'C8'=list(NULL),                      # cell type signature gene sets
+                  # 'custom'=list('custom'=gois))           # custom genesets
+q_thresh <- 0.2  # Threshold to select top genesets from
 
-ct_res_gras <- lapply(names(res_dds), function(celltype){
-  print(celltype)
-  res <- res_dds[[celltype]]$res        # DESeq results data frame
-
-  resl <- list()
-  # LFC for interaction terms
-  resl[['interaction']] <- list(res=res, 
-                                lfc_col="log2FoldChange.int")
+lfcs <- list("grp1"=c("interaction"='log2FoldChange.interaction',
+                      "cis_tdln_ln"="log2FoldChange.cis_tdln-ln"),
+             "grp2"=c("tdln_cis_pbs"="log2FoldChange.tdln_cis-pbs",
+                      "pbs_tdln_ln"="log2FoldChange.pbs_tdln-ln"))
+ct_res_gsea <- lapply(lfcs, function(lfc_cols){
+  # lfc_cols <- c("interaction"='log2FoldChange.interaction',
+  #               "cis_tdln_ln"="log2FoldChange.cis_tdln-ln")
   
-  res_gras <- lapply(resl, function(res_i){
-    res <- res_i$res
-    lfc_col <- res_i$lfc_col
-    lfc_v <- setNames(res[,lfc_col],
-                      ens2entrez_ids[res$ens])
+  ct_res_gsea <- lapply(celltypes, function(celltype){
+    print(celltype)
+    res <- res_dds[[celltype]]$res        # DESeq results data frame
     
-    gra <- lapply(names(msig_lvls), function(mlvl){
-      sub_gra <- lapply(msig_lvls[[mlvl]], function(sublvl){
-        # mlvl <- 'H'; sublvl <- NULL
-        # get Msigdb gene sets
-        print(paste0(">", mlvl, ":", sublvl, "..."))
-        msig_ds <- if(mlvl == 'custom'){
-          data.frame(gs_name=gsub("[0-9]*$", "", names(unlist(gois))),
-                     entrez_gene=sym2entrez_ids[unlist(gois)]) %>%
-            filter(!is.na(entrez_gene))
-        } else {
-          msigdbr(species = 'Mus musculus', category = mlvl, 
-                  subcategory = sublvl) %>%
-            dplyr::select(gs_name, entrez_gene) %>%
-            as.data.frame()
-        }
-        
-        # run GSEA on the gene set given
-        msig_gsea <- getGSEA(msig_ds, lfc_v, return.df=FALSE)
-        msig_gsea_df <- as.data.frame(msig_gsea)[,1:10]
-        
-        # Barplot of NES for significant GSEA terms, ordered by NES
-        title <- paste0(mlvl, " [", sublvl, "] : ", celltype)
-        gsea_bp <- vizGSEA.bp(msig_gsea_df, topn=25, title = title)
-        
-        # Heatmap visualizing the LFC of Genesets by Genes
-        # gsea_heat <- vizGSEA.hm(msig_gsea, lfc_v=lfc_v, topn=15)
-        
-        return(list("gsea-viz"=list(gsea_bp), #, gsea_heat), ### dp, gg_gsea, ridge),
-                    "gsea-tbl"=msig_gsea_df))
-      })
+    # Run GSEA using the LFC for the interaction and the CIS-treatment terms
+    gsea <- lapply(lfc_cols, function(lfc_col){
+      lfc_v <- setNames(res[,lfc_col],
+                        ens2entrez_ids[res$ens])
       
-      if(mlvl!='custom'){
-        sublvls <- as.character(unlist(msig_lvls[[mlvl]]))
-        if(length(sublvls)==0) sublvls <- 'NA'
-        names(sub_gra) <- sublvls
-      } else {
-        names(sub_gra) <- names(msig_lvls[[mlvl]])
-      }
-      return(sub_gra)
+      iterateMsigdb(species='Mus musculus', msig_lvls=msig_lvls, 
+                    fun=gseaFun, lfc_v=lfc_v)
     })
-    names(gra) <- names(msig_lvls)
-    return(gra)
+    
+    # Merge the GSEA values between the two terms, select values that are 
+    # significant below a certain threshold for each term
+    gsea <- lapply(gsea, unlist, recursive=F)
+    gsea_merge <- lapply(names(gsea[[1]]), function(geneset_lvl){
+      int_gsea <- gsea[[names(lfc_cols)[1]]][[geneset_lvl]] # Interaction GSEA
+      cis_gsea <- gsea[[names(lfc_cols)[2]]][[geneset_lvl]] # CIS_TDLN-LN GSEA
+      
+      .isolateGsea <- function(x, id=NULL){
+        x %>%
+          select(ID, setSize, NES, p.adjust, rank, leading_edge) %>%
+          rename_with(., ~ paste0(., ".", id), .cols=matches("[^ID]", perl=T))
+      }
+      ids <- gsub("_.*", "", names(lfc_cols))
+      gsea_m <- tryCatch({
+        full_join(int_gsea %>% 
+                    as.data.frame() %>%
+                    .isolateGsea(., ids[1]),
+                  cis_gsea %>% 
+                    as.data.frame() %>%
+                    .isolateGsea(., ids[2]),
+                  by='ID') %>%
+          filter(!!as.symbol(paste0("p.adjust.", ids[1])) < q_thresh & 
+                   !!as.symbol(paste0("p.adjust.", ids[2])) < q_thresh) %>%
+          mutate(geneset=geneset_lvl,
+                 celltype=celltype)
+      }, error=function(e){NULL})
+      return(gsea_m)
+    })
+    names(gsea_merge) <- names(gsea[[1]])
+    
+    return(gsea_merge)
   })
-  
-  return(res_gras)
 })
-names(ct_res_gras) <- names(res_dds)
-saveRDS(ct_res_gras, file=file.path(outdir, "GSEA-response.rds"))
+saveRDS(ct_res_gsea, file=file.path(outdir, "GSEA-response.rds"))
+
+ct_res_gsea <- readRDS(file.path(outdir, "GSEA-response.rds"))
+
+## Collapse GSEA results to a single table per celltype
+grp_gsea_tbls_merge <- lapply(ct_res_gsea, function(grps){
+  gsea_tbls <- lapply(grps, function(gsea_i) {
+    lapply(gsea_i[which(!sapply(gsea_i, is.null))], function(i) {
+      padj_cols <- grep("p.adjust", colnames(i), value=T)
+      i %>% 
+        top_n(wt=(!!as.symbol(padj_cols[1])) + (!!as.symbol(padj_cols[2])), 5)
+    }) %>%
+      do.call(rbind, .)
+  })
+  gsea_tbls_merge <- do.call(rbind, gsea_tbls) %>% 
+    as.data.frame()
+  return(gsea_tbls_merge)
+})
+
+
+## Visualize the GSEA results
+gg_gseas <- lapply(grp_gsea_tbls_merge, function(gsea_tbls_merge){
+  
+  melt_gsea <- gsea_tbls_merge %>% 
+    select(ID, grep("^NES", colnames(.), value=T), celltype, geneset) %>%
+    reshape2::melt() %>%
+    mutate(geneset=gsub("^.*?\\.", "", geneset) %>% 
+             gsub("base", "Hallmark", .),
+           ID=gsub("_", " ", ID) %>%
+             gsub("HALLMARK |GOBP |REACTOME |GOCC |GOM F", "", .),
+           variable=gsub("NES.cis", "NES (CIS)", variable) %>%
+             gsub("NES.int", "NES (TDLN-LN)", .) %>%
+             gsub("NES.tdln", "NES (TDLN_CIS-PBS)", .) %>%
+             gsub("NES.pbs", "NES (PBS_TDLN-LN)", .)) %>%
+    filter(geneset!='IMMUNESIGDB')
+  gg_gsea <- ggplot(melt_gsea, aes(x=value, y=ID, fill=variable, group=variable)) +
+    facet_grid(geneset ~ celltype, scales = "free_y", space='free',switch = "y") +
+    geom_bar(stat='identity', position='dodge') +
+    # scale_y_discrete(labels = function(x) str_wrap(x, width = 10)) +
+    scale_fill_manual(values=as.character(rev(delta_col))) +
+    theme_classic() + ylab("") +
+    geom_hline(aes(yintercept=ID), linetype='dashed', color='grey') + 
+    theme(axis.text.y = element_text(size = 7,
+                                     hjust=0), 
+          strip.text.y.left = element_text(angle=90)) +
+    scale_y_discrete(labels =  scales::wrap_format(26))
+  gg_gsea
+})
+
+
+# pdf(file.path(outdir, "gsea_response2.pdf"), width = 10, height = 12)
+pdf(file.path("~/xfer", "gsea_response.pdf"), width = 10, height = 12)
+gg_gseas
+dev.off()
+
+
+
 
 ## Write out GSEA results
-gsea_tbls <- lapply(unlist(unlist(unlist(ct_res_gras, recursive = F), recursive = F), recursive=F), 
-                    function(i){
-  i$`gsea-tbl`
-})
+gsea_tbls <- lapply(ct_res_gsea, function(x) do.call(rbind, x))
+gsea_tbls$MSM$celltype <- 'MSM'
+gsea_tbls$SSM$celltype <- 'SSM'
+
 
 drop_cols <- c('Description', 'leading_edge')
 gsea_tbl <- do.call(rbind, gsea_tbls) %>%
@@ -673,8 +763,269 @@ gsea_vizs <- lapply(unlist(unlist(unlist(ct_res_gras, recursive = F), recursive 
 gsea_vizs
 dev.off()
 
+##############################
+#### 6) SCENIC - Regulons ####
+## Initialize
+res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
+coldata <- readRDS(file=file.path(outdir, "rds", "coldata.rds"))
+dir.create(file.path(outdir, "regulon"), showWarnings = F)
+
+dds <- res_dds$All$dds_lnBase
+scenicOptions <- initializeScenic(org=scenic_org_code, 
+                                  dbDir=dirname(rcis_db), dbs=basename(rcis_db), 
+                                  datasetTitle='msm_ssm', nCores=10) 
+scenicOptions@settings$defaultTsne <- list("perpl"=3,
+                                           "dims"=30,
+                                           "aucType"="AUC")
+
+# Pre-filtering of the gene expression matrix
+exprMat <- assay(dds)[which(!is.na(ens2sym_ids[rownames(dds)])),]
+rownames(exprMat) <- ens2sym_ids[rownames(exprMat)] 
+exprMat <- exprMat[which(!duplicated(rownames(exprMat))),]
+genesKept <- geneFiltering(exprMat, scenicOptions,
+                           minCountsPerGene=10,
+                           minSamples=15)
+exprMat_filtered <- exprMat[genesKept, ]
+
+# GENIE3 and SCENIC analysis wrapper
+if(!file.exists(file.path("int", "3.4_regulonAUC.Rds"))){
+  runCorrelation(exprMat_filtered, scenicOptions)
+  exprMat_filtered_log <- log2(exprMat_filtered+1) 
+  runGenie3(exprMat_filtered_log, scenicOptions)
+  
+  scenicOptions <- runSCENIC_1_coexNetwork2modules(scenicOptions)
+  scenicOptions <- runSCENIC_2_createRegulons(scenicOptions) #, coexMethod=c("top5perTarget")) #** Only for toy run!!
+  scenicOptions <- runSCENIC_3_scoreCells(scenicOptions, exprMat_filtered)
+  scenicOptions <- runSCENIC_4_aucell_binarize(scenicOptions)
+}
+
+# Read in Regulon information
+regulonAUC <- loadInt(scenicOptions, "aucell_regulonAUC")
+# Set the sample-order plotting
+sample_ord <- coldata[with(coldata, order(celltype, lnstatus, treatment)),]
+
+# Generate the Jenson-Shannon Divergence value (0 = identical, 1 = divergent) between a cell-type
+# and the entire population, where RSS = 1- sqrt(JSD)
+cols <- c('#969696', '#ef3b2c', '#67000d')
+rssPlots <- lapply(colnames(coldata), function(col_i){
+  rss <- calcRSS(AUC=getAUC(regulonAUC), cellAnnotation=coldata[colnames(regulonAUC),col_i])
+  list("plot"=plotRSS(rss[,unique(sample_ord[,col_i])],
+                      col.low=cols[1], col.mid=cols[2], col.high=cols[3]), 
+       "rss"=reshape2::melt(rss))
+})
+names(rssPlots) <- colnames(coldata)
+
+# Identify regulons that are descriptive of the celltype,lnstatus,group and plot the 
+# normalized AUC values +/- sd for each group
+auc_l <- calcMeanAUC(getAUC(regulonAUC), cellAnnotation=coldata[colnames(regulonAUC),]$condition)
+thresh_auc <- auc_l$auc
+site_auc_grp <- thresh_auc %>% .splitFg(., 'fg3') # PBS or CIS_[MS]SM: compare between TDLN/LN
+trt_auc_grp <- thresh_auc %>% .splitFg(., 'fg1') # Interaction: compare between PBS/CIS
+
+# Calculate delta-AUC_TDLN-LN between CIS_[MS]SM, TDLN and LN:
+cis_ids <- c("MSM"='CIS_MSM', "SSM"='CIS_SSM')
+cis_sm_delta <- lapply(cis_ids, function(grp_id){
+  reshape2::dcast(site_auc_grp[[grp_id]],
+                                Regulon ~ V1, value.var='mean') %>%
+    mutate(delta=TDLN-LN)  %>% 
+    rename_with(., ~ paste0(., ".auc"), matches("[^Regulon]"))
+})
+
+# Calculate delta-AUC_TDLN-LN between PBS_[MS]SM: TDLN and LN [V1]:
+pbs_ids <- c("MSM"='PBS_MSM', "SSM"='PBS_SSM')
+pbs_sm_delta <- lapply(pbs_ids, function(grp_id){
+  reshape2::dcast(site_auc_grp[[grp_id]],
+                  Regulon ~ V1, value.var='mean') %>%
+    mutate(delta=TDLN-LN)  %>% 
+    rename_with(., ~ paste0(., ".auc"), matches("[^Regulon]"))
+})
+
+# Calculate delta-AUC_CIS-PBS for TDLN_[MS]SM: CIS and PBS [V2]:
+tdln_ids <- c("MSM"='MSM_TDLN', "SSM"='SSM_TDLN')
+tdln_sm_delta <- lapply(tdln_ids, function(grp_id){
+  reshape2::dcast(trt_auc_grp[[grp_id]],
+                  Regulon ~ V2, value.var='mean') %>%
+    mutate(delta=CIS-PBS)  %>% 
+    rename_with(., ~ paste0(., ".auc"), matches("[^Regulon]"))
+})
+
+# Calculate delta(delta(AUC_CIS-PBS)) between Interactions [comparisons between PBS/CIS]:
+int_ids <- list("MSM"=c('MSM_TDLN', 'MSM_LN'),
+                "SSM"=c('SSM_TDLN', 'SSM_LN'))
+int_sm_delta <- lapply(int_ids, function(grp_id){
+  auc_tdln <- reshape2::dcast(trt_auc_grp[[grp_id[1]]],
+                         Regulon ~ V2, value.var='mean') %>%
+    mutate(delta=CIS-PBS) %>% 
+    rename_with(., ~ paste0(., ".tdln"), matches("[^Regulon]"))
+  auc_ln <- reshape2::dcast(trt_auc_grp[[grp_id[2]]],
+                              Regulon ~ V2, value.var='mean') %>%
+    mutate(delta=CIS-PBS) %>% 
+    rename_with(., ~ paste0(., ".ln"), matches("[^Regulon]"))
+  
+  full_join(auc_tdln, auc_ln, by='Regulon') %>%
+    mutate("delta.tdln_ln"=delta.tdln - delta.ln)
+})
+regulon_aucs <- list("interaction"=int_sm_delta,
+                     "tdln_cis_pbs"=tdln_sm_delta,
+                     "pbs_tdln_ln"=pbs_sm_delta,
+                     "cis_tdln_ln"=cis_sm_delta)
+saveRDS(regulon_aucs, file=file.path(outdir, "regulon", "regulon_auc.rds"))
+
+
+# Interaction + CIS_TDLN-LN regulon AUC plots
+grp1_regulons <- .getRegulons(intx=reshape2::melt(int_sm_delta$MSM),
+                              cisx=reshape2::melt(cis_sm_delta$MSM)) %>%
+  tail(., n=10)
+gg_grp1_auc_plot <- lapply(setNames(celltypes,celltypes), function(ct){
+  aucPlot(int_i=int_sm_delta[[ct]], grp2_i=cis_sm_delta[[ct]], 
+          new_ids=c('(Interaction)', '(Cis_TDLN-LN)'), 
+          celltype=ct, regulons = grp1_regulons,
+          delta_grp1="delta.tdln_ln", delta_grp2='delta.auc')
+})
+
+# PBS_TDLN-LN + TDLN_CIS-PBS regulon AUC plots
+grp2_regulons <- .getRegulons(cisx=reshape2::melt(pbs_sm_delta$MSM),
+                              intx=reshape2::melt(tdln_sm_delta$MSM),
+                              delta_int='delta.auc') %>%
+  tail(., n=10)
+gg_grp2_auc_plot <- lapply(setNames(celltypes,celltypes), function(ct){
+  aucPlot(int_i=int_sm_delta[[ct]],
+          grp1_i=pbs_sm_delta[[ct]], grp2_i=tdln_sm_delta[[ct]], 
+          new_ids=c('(PBS_TDLN-LN)', '(TDLN_CIS-PBS)'), 
+          celltype=ct, regulons = grp2_regulons,
+          delta_grp1="delta.auc", delta_grp2='delta.auc')
+})
+
+grp3_regulons <- .getRegulons(cisx=reshape2::melt(pbs_sm_delta$MSM),
+                              intx=reshape2::melt(pbs_sm_delta$MSM),
+                              delta_int='delta.auc') %>%
+  tail(., n=10)
+gg_grp3_auc_plot <- lapply(setNames(celltypes,celltypes), function(ct){
+  aucPlot(int_i=int_sm_delta[[ct]],
+          grp1_i=pbs_sm_delta[[ct]], grp2_i=tdln_sm_delta[[ct]], 
+          new_ids=c('(PBS_TDLN-LN)', '(TDLN_CIS-PBS)'), 
+          celltype=ct, regulons = grp3_regulons,
+          delta_grp1="delta.auc", delta_grp2='delta.auc')
+})
+
+grp4_regulons <- .getRegulons(cisx=reshape2::melt(tdln_sm_delta$MSM),
+                              intx=reshape2::melt(tdln_sm_delta$MSM),
+                              delta_int='delta.auc') %>%
+  tail(., n=10)
+gg_grp4_auc_plot <- lapply(setNames(celltypes,celltypes), function(ct){
+  aucPlot(int_i=int_sm_delta[[ct]],
+          grp1_i=pbs_sm_delta[[ct]], grp2_i=tdln_sm_delta[[ct]], 
+          new_ids=c('(PBS_TDLN-LN)', '(TDLN_CIS-PBS)'), 
+          celltype=ct, regulons = grp4_regulons,
+          delta_grp1="delta.auc", delta_grp2='delta.auc')
+})
+
+
+# Do the plotties
+## Regulon-AUC values and their corresponding delta's between CIS and Interaction
+pdf(file.path(outdir, "regulon", "scenic_regulons.pdf"), width = 13, height = 6)
+gg_grp1_aucs <- plot_grid(plotlist=gg_grp1_auc_plot, nrow=1, align='h', axis='bt')
+gg_grp2_aucs <- plot_grid(plotlist=gg_grp2_auc_plot, nrow=1, align='h', axis='bt')
+gg_grp3_aucs <- plot_grid(plotlist=gg_grp3_auc_plot, nrow=1, align='h', axis='bt')
+gg_grp4_aucs <- plot_grid(plotlist=gg_grp4_auc_plot, nrow=1, align='h', axis='bt')
+gg_demo <- plot_grid(demoAucPlot(), ncol=2)
+plot_grid(gg_demo, gg_grp1_aucs, nrow=2, align='v', axis='lr', rel_heights = c(1,3.5))
+plot_grid(gg_demo, gg_grp2_aucs, nrow=2, align='v', axis='lr', rel_heights = c(1,3.5))
+plot_grid(gg_demo, gg_grp3_aucs, nrow=2, align='v', axis='lr', rel_heights = c(1,3.5))
+plot_grid(gg_demo, gg_grp4_aucs, nrow=2, align='v', axis='lr', rel_heights = c(1,3.5))
+dev.off()
+
+## Regulon-RSS values marking their group-specificity
+pdf(file.path(outdir, "regulon", "scenic_regulons_RSS.pdf"))
+lapply(rssPlots, function(i) i$plot$plot)
+dev.off()
+
+
+######################################
+#### 7) Pairing Regulons with DEG ####
+## Initialize
+res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
+coldata <- readRDS(file=file.path(outdir, "rds", "coldata.rds"))
+regulon_aucs <- readRDS(file=file.path(outdir, "regulon", "regulon_auc.rds"))
+dir.create(file.path(outdir, "regulon_deg"), showWarnings = F)
+
+# Read in Regulon information
+regulon_targets <- readRDS(file.path("int", "2.5_regulonTargetsInfo.Rds"))
+
+# For each celltype, merge the gene-LFC/pvals and the regulon-AUC/Deltas
+regulon_targets_cts <- lapply(celltypes, function(celltype){
+  # celltype <- 'MSM'
+  # Gene-level LFC for DEGs
+  lfcs <- res_dds[[celltype]]$res %>%
+    select(gene, grep("^padj", colnames(.), value=T), 
+           grep("log2FoldChange", colnames(.), value=T)) %>%
+    rename_with(., ~ gsub("-", "_", .))
+  
+  # Regulon-level delta-AUCs
+  regulons <- lapply(names(regulon_aucs), function(reg_id){
+    reg_i <- regulon_aucs[[reg_id]]
+    reg_i[[celltype]] %>%
+      mutate(TF=gsub("(_extended)? \\(.*", "", Regulon)) %>%
+      filter(!duplicated(TF)) %>% 
+      select(TF, grep("delta", colnames(.))) %>%
+      rename_with(., ~ gsub("tdln_ln$|auc$", reg_id, .), .cols=matches("delta", perl=T))
+  }) %>%
+    Reduce(function(x,y) full_join(x,y,by='TF'), .)
+  
+  # Merge the regulon-target with the LFCs and regulon-deltas
+  regulon_targets_full <- regulon_targets %>% 
+    left_join(lfcs, by='gene') %>%
+    left_join(regulons, by='TF')
+  
+  return(regulon_targets_full)
+})
+
+# Set the list of regulons interested in
+regulons <- .getRegulons(intx=reshape2::melt(regulon_aucs$interaction$MSM),
+                         cisx=reshape2::melt(regulon_aucs$cis_tdln_ln$MSM)) %>%
+  tail(., n=10) %>% 
+  gsub("(_extended)? \\(.*", "", .) %>%
+  unique()
+
+grps <- list("grp1"=c('interaction', 'cis_tdln_ln'))
+regulon_network <- lapply(names(regulon_targets_cts), function(celltype){
+  ct_reg <- regulon_targets_cts[[celltype]]
+  
+  # ct_reg <- regulon_targets_cts$MSM
+  ct_reg_subset <- ct_reg %>%
+    filter(TF %in% regulons,
+           highConfAnnot==TRUE) %>%
+    select(TF, gene, NES, spearCor, grep(paste(grps[[1]], collapse="|"), colnames(.),value=T)) %>% 
+    rename_with(., .fn=~paste0(., ".", celltype), .cols=matches("padj|log2|delta"))
+  
+  gpr <- ct_reg_subset %>% 
+    group_by(TF) %>% 
+    summarise(genes=paste(gene, collapse=","))
+  nodes <- ct_reg_subset %>%
+    select(gene, grep(paste(grps[[1]], collapse="|"), colnames(.),value=T)) %>%
+    unique()
+  edges <- ct_reg_subset %>% 
+    select(TF, gene, spearCor, NES)
+  
+  return(list("edge"=edges, "node"=nodes, "genes_per_regulon"=gpr))
+})
+names(regulon_network) <- names(regulon_targets_cts)
+
+for(celltype in celltypes){
+  
+  
+  write.table(regulon_network$MSM$edge, 
+              file=file.path(outdir, "regulon_deg", "regulon_deg.edge.tsv"),
+              sep="\t", col.names=T, row.names = F, quote = F)
+  full_join(regulon_network$MSM$node,
+            regulon_network$SSM$node, by=c("gene")) %>%
+    write.table(., 
+              file=file.path(outdir, "regulon_deg", "regulon_deg.node.tsv"),
+              sep="\t", col.names=T, row.names = F, quote = F)
+}
+
 #########################################
-#### 6) WGCNA: Coexpression analysis ####
+#### 7) WGCNA: Coexpression analysis ####
 celltypes <- setNames(celltypes,celltypes)
 res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
 
@@ -700,7 +1051,8 @@ dds <- DESeq(dds)
 
 ## B) Identifying power for network modules ------------------------------------
 ## Pick a soft power threshold  for linking the Similarity Matrix to the Adjacency Matrix
-normalized_array <- t(assay(dds))
+# normalized_array <- t(assay(dds))
+normalized_array <- t(vst(assay(dds)))
 storage.mode(normalized_array) <- 'numeric'
 sft <- pickSoftThreshold(normalized_array,
                          dataIsExpr = TRUE,
@@ -712,7 +1064,7 @@ sft_df <- data.frame(sft$fitIndices) %>%
   dplyr::mutate(model_fit = -sign(slope) * SFT.R.sq)
 
 ## Computer the network modules and eigengenes from the adjacency matrix using TOM signed
-pwr <- 16
+pwr <- 18
 cor <- WGCNA::cor
 bwnet <- blockwiseModules(normalized_array,
                           maxBlockSize = 5000, 
@@ -735,19 +1087,34 @@ module_eigengenes <- bwnet$MEs
 # plot(network, layout=layout.fruchterman.reingold(network), 
 #      edge.arrow.size = 0.2)
 
-## C) Associating eigengene modules with significant interaction DEGs ------------------------------------
-gene_modules <- lapply(names(res_dds), function(res_id){
+
+## C) Correlating eigengenes to metadata ---------------------------------------
+## Create the design matrix from the `time_point` variable
+group <- 'treatment' # lnstatus, treatment, celltype, condition
+des_mat <- model.matrix(as.formula(paste0("~ coldata$", group)))
+stats_df <- linearModelEigen(t(module_eigengenes), des_mat)
+
+## Combine eigenegenes to the metadata
+module_df <- module_eigengenes %>%
+  tibble::rownames_to_column("Sample") %>%
+  # Here we are performing an inner join with a subset of metadata
+  dplyr::inner_join(coldata %>%
+                      tibble::rownames_to_column("Sample") %>%
+                      dplyr::select(Sample, lnstatus, treatment, celltype, condition),
+                    by = c("Sample" = "Sample"))
+
+
+## D1) Associating eigengene modules with significant interaction DEGs ---------
+res_module_oras <- lapply(names(res_dds), function(res_id){
   res <- res_dds[[res_id]]$res
-  
   # Merge eigengene modules with p-values per MSM interaction
   gene_module_key <- tibble::enframe(bwnet$colors, name = "gene", value = "module") %>%
     dplyr::mutate(module = paste0("ME", module)) %>% 
-    mutate("hugo"=gene_ids[gene]) %>%
+    mutate("hugo"=ens2sym_ids[gene]) %>%
     mutate("entrez"=ens2entrez_ids[gene]) %>%
     inner_join(res %>%
-                 select(c("ens", "log2FoldChange.interaction",
-                          "log2FoldChange.cis_tdln-ln",
-                          "padj.interaction", "padj.cis_tdln-ln")),
+                 as.data.frame() %>%
+                 select(c("ens", grep("(padj)|(log2Fold)", colnames(.), value=T))),
                by=c("gene" = "ens")) 
   
   # Summarize the p-adjusted values per eigengene module
@@ -773,15 +1140,6 @@ gene_modules <- lapply(names(res_dds), function(res_id){
   names(sig_modules) <- sapply(sig_modules, function(i) unique(i$module))
   
   
-  ## D) Overrepresentation analysis of modules -----------------------------------
-  oraFun <- function(msig_ds, entrez_genes){
-    # overrepresentation analysis
-    sig_ora <- tryCatch({
-      enricher(gene = na.omit(entrez_genes), TERM2GENE = msig_ds)@result
-    }, error=function(e){NULL})
-    return(sig_ora)
-  }
-  
   ## Select the genes of module X
   module_ids <- sapply(sig_modules, function(i) unique(i$module))
   module_oras <- lapply(setNames(module_ids,module_ids), function(me){
@@ -791,7 +1149,7 @@ gene_modules <- lapply(names(res_dds), function(res_id){
     
     oras <- iterateMsigdb(species='Mus musculus', fun=oraFun, 
                           entrez_genes=module_genes$entrez)
-    oras <- lapply(oras, summarizeOra, keep_genes=TRUE)
+    oras <- lapply(oras, summarizeOra, keep_genes=TRUE, qcutoff=0.15)
     
     # Get the LFC for all the genes composing that geneset
     oras <- lapply(oras, function(ora){
@@ -820,9 +1178,185 @@ gene_modules <- lapply(names(res_dds), function(res_id){
       select(-c(geneID))
     return(oras)
   })
+  
+  do.call(rbind, module_oras) %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column(., "module") %>%
+    mutate(module = gsub("\\.[0-9]*$", "", module))
+})
+names(res_module_oras) <- names(res_dds)
+saveRDS(res_module_oras, file=file.path(outdir, "network", "lfc_module_oras.rds"))
+
+## D2) Get frequent word combinations of Gene sets for each module ---------
+if(!exists("res_module_oras")) res_module_oras <- readRDS(file.path(outdir, "network", "lfc_module_oras.rds"))
+x <- split(res_module_oras$MSM, res_module_oras$MSM$module)
+names(x)
+
+n <- 6
+freqWords <- function(textv, split="_", word_pairs=F, n=5){
+  if(length(textv)==0) return('')
+  words <- unlist(strsplit(textv, split=split))
+  if(word_pairs) words <- paste(words, lead(words), sep=":")
+  paste(names(
+    head(sort(table(words), decreasing = T), n)), 
+    collapse=",")
+}
+
+pairwise_words <- lapply(res_module_oras, function(module_i){
+  if(nrow(module_i)==0) return(NULL)
+  spl_module_i <- split(module_i, module_i$module)
+  freq_word_pairs <- sapply(spl_module_i, function(i){
+    freqWords(textv=i$ID, split="_", word_pairs=TRUE, n=n)
+  })
+  freq_words <- sapply(spl_module_i, function(i){
+    freqWords(textv=i$ID, split="_", word_pairs=FALSE, n=n)
+  })
+  lfc_delta <- sapply(spl_module_i, function(i){ c("mean"=mean(i$mean_lfc_int), 
+                                                   "sd"=mean(i$mean_lfc_int))})
+  t(lfc_delta) %>%
+    as.data.frame() %>%
+    mutate("freq_w"=freq_words,
+           "freq_w_pairs"=freq_word_pairs)
+})
+
+
+## E) Cytoscape export from network ------------
+lfc <- lapply(names(res_dds), function(res_id) {
+  .addID <- function(x) paste0(x, ".", res_id)
+  res_dds[[res_id]]$res %>%
+    select(., grep("(log2Fold)|(ens)|(gene)", colnames(.), value=T)) %>%
+    rename_with(., .addID, starts_with("log2"))
+}) %>% 
+  Reduce(function(x,y) merge(x,y,by=c('ens', 'gene'), all=T), .)
+
+quantile_edge <- 0.9
+TOM = TOMsimilarityFromExpr(normalized_array, power = pwr)
+modules <- colnames(bwnet$MEs) %>%
+  gsub("ME", "", .) %>%
+  setNames(., colnames(bwnet$MEs))
+
+cyts <- lapply(modules, function(module){
+  print(module)
+  in_module <- which(bwnet$colors == as.integer(module))
+
+  datexpr = normalized_array[,in_module]
+  TOM_module = TOMsimilarityFromExpr(datexpr, power = pwr, networkType = "signed", TOMType="signed");
+  probes = colnames(datexpr)
+  dimnames(TOM_module) = list(probes, probes)
+  
+  sym_ids <- setNames(ens2sym_ids[probes], probes)
+  sym_ids[which(is.na(sym_ids))] <- probes[which(is.na(sym_ids))]
+  
+  cyt = exportNetworkToCytoscape(TOM_module,
+                                 weighted = TRUE,
+                                 threshold = 0.10)
+  cyt = exportNetworkToCytoscape(TOM_module,
+                                 edgeFile = file.path("manual", "network", 
+                                                      paste("cytoscape-edges-", 
+                                                            paste(module, collapse="-"), 
+                                                            ".txt", sep="")),
+                                 nodeFile = file.path("manual", "network", 
+                                                      paste("cytoscape-nodes-", 
+                                                            paste(module, collapse="-"), 
+                                                            ".txt", sep="")),
+                                 weighted = TRUE,
+                                 threshold = quantile(cyt$edgeData$weight, quantile_edge),
+                                 nodeNames = probes,
+                                 altNodeNames = sym_ids,
+                                 nodeAttr = lfc[match(probes, lfc$ens), 
+                                                    grep("log2FoldChange", colnames(lfc))] %>%
+                                   round(., 3));
+  return(cyt)
+})
+
+## C) Associating eigengene modules with significant interaction DEGs ------------------------------------
+gene_modules <- lapply(names(res_dds), function(res_id){
+  res <- res_dds[[res_id]]$res
+
+  # Merge eigengene modules with p-values per MSM interaction
+  gene_module_key <- tibble::enframe(bwnet$colors, name = "gene", value = "module") %>%
+    dplyr::mutate(module = paste0("ME", module)) %>%
+    mutate("hugo"=gene_ids[gene]) %>%
+    mutate("entrez"=ens2entrez_ids[gene]) %>%
+    inner_join(res %>%
+                 select(c("ens", "log2FoldChange.interaction",
+                          "log2FoldChange.cis_tdln-ln",
+                          "padj.interaction", "padj.cis_tdln-ln")),
+               by=c("gene" = "ens"))
+
+  # Summarize the p-adjusted values per eigengene module
+  module_deg <- gene_module_key %>%
+    group_by(module) %>%
+    dplyr::summarise(mean_lfc_cis=mean(`log2FoldChange.cis_tdln-ln`, na.rm=T),
+                     sd_lfc_cis=sd(`log2FoldChange.cis_tdln-ln`, na.rm=T),
+                     mean_lfc_int=mean(`log2FoldChange.interaction`, na.rm=T),
+                     sd_lfc_int=sd(`log2FoldChange.interaction`, na.rm=T),
+                     q95_cis=quantile(`padj.cis_tdln-ln`, 0.95, na.rm=T),
+                     q95_int=quantile(padj.interaction, 0.95, na.rm=T),
+                     n=n()) %>%
+    arrange(q95_int+q95_cis)
+
+  # Subset for the gene_modules that have a Q95 padj value < 0.05
+  sig_modules <- gene_module_key %>%
+    group_by(module) %>%
+    filter(module %in% (module_deg %>%
+                          filter(q95_int < 0.2 & q95_cis < 0.2) %>%
+                          select(module) %>%
+                          unlist())) %>%
+    group_split()
+  names(sig_modules) <- sapply(sig_modules, function(i) unique(i$module))
+
+
+  ## D) Overrepresentation analysis of modules -----------------------------------
+  oraFun <- function(msig_ds, entrez_genes){
+    # overrepresentation analysis
+    sig_ora <- tryCatch({
+      enricher(gene = na.omit(entrez_genes), TERM2GENE = msig_ds)@result
+    }, error=function(e){NULL})
+    return(sig_ora)
+  }
+
+  ## Select the genes of module X
+  module_ids <- sapply(sig_modules, function(i) unique(i$module))
+  module_oras <- lapply(setNames(module_ids,module_ids), function(me){
+    print(paste0(res_id, ": ", me, "..."))
+    module_genes <- gene_module_key %>%
+      dplyr::filter(module == me)
+
+    oras <- iterateMsigdb(species='Mus musculus', fun=oraFun,
+                          entrez_genes=module_genes$entrez)
+    oras <- lapply(oras, summarizeOra, keep_genes=TRUE)
+
+    # Get the LFC for all the genes composing that geneset
+    oras <- lapply(oras, function(ora){
+      if(nrow(ora)==0) return(ora)
+
+      lfc_df <- sapply(ora$geneID, function(genes){
+        lfcs <- genes %>%
+          strsplit(., split="/") %>%
+          as.data.frame() %>%
+          rename_with(~ "entrez") %>%
+          inner_join(gene_module_key,
+                     by=c("entrez" = "entrez")) %>%
+          summarise(mean_lfc_cis=mean(`log2FoldChange.cis_tdln-ln`, na.rm=T),
+                    sd_lfc_cis=sd(`log2FoldChange.cis_tdln-ln`, na.rm=T),
+                    mean_lfc_int=mean(`log2FoldChange.interaction`, na.rm=T),
+                    sd_lfc_int=sd(`log2FoldChange.interaction`, na.rm=T)) %>%
+          as.numeric()
+      }) %>%
+        t() %>%
+        as.data.frame() %>%
+        rename_with(~ c('mean_lfc_cis', 'sd_lfc_cis', 'mean_lfc_int', 'sd_lfc_int'))
+
+      return(as.data.frame(cbind(ora, lfc_df)))
+    })
+    oras <- plyr::rbind.fill(oras) %>%
+      select(-c(geneID))
+    return(oras)
+  })
   saveRDS(module_oras, file=file.path(outdir, "rds", paste0(res_id, "_coexpression_modules_intAndCis.rds")))
-  
-  
+
+
   ## Get frequent word combinations of Gene sets for each module
   n <- 6
   freqWords <- function(textv, split="_", word_pairs=F, n=5){
@@ -830,7 +1364,7 @@ gene_modules <- lapply(names(res_dds), function(res_id){
     words <- unlist(strsplit(textv, split=split))
     if(word_pairs) words <- paste(words, lead(words), sep=":")
     paste(names(
-      head(sort(table(words), decreasing = T), n)), 
+      head(sort(table(words), decreasing = T), n)),
       collapse=",")
   }
   freq_word_pairs <- sapply(module_oras, function(i){
@@ -839,16 +1373,16 @@ gene_modules <- lapply(names(res_dds), function(res_id){
   freq_words <- sapply(module_oras, function(i){
     freqWords(textv=i$ID, split="_", word_pairs=FALSE, n=n)
   })
-  
-  module_deg_anno <- module_deg %>% 
+
+  module_deg_anno <- module_deg %>%
     filter(module %in% names(sig_modules)) %>%
     mutate("freq_w"=freq_words[names(sig_modules)]) %>%
     mutate("freq_w_pairs"=freq_word_pairs[names(sig_modules)])
-  
+
   module_ora <- do.call(rbind, module_oras) %>%
     as.data.frame() %>%
     mutate("module"=rep(names(module_oras), sapply(module_oras, nrow)))
-  
+
   write.table(module_ora, file=file.path(outdir, paste0(res_id, "coexpression_module_intAndCis.csv")),
               sep=",", quote=F, row.names = F, col.names = T)
   return(list("ora"=module_oras, "modules"=sig_modules,
@@ -858,16 +1392,16 @@ names(gene_modules) <- names(res_dds)
 
 
 gene_modules_df <- unlist(gene_modules, recursive=F)
-gene_modules_df <- gene_modules_df[grep("anno$", names(gene_modules_df))] 
+gene_modules_df <- gene_modules_df[grep("anno$", names(gene_modules_df))]
 gene_modules_df <- gene_modules_df %>%
-  rbind.fill() %>% 
+  rbind.fill() %>%
   as.data.frame() %>%
-  mutate("celltype"=rep(gsub(".anno", "", names(gene_modules_df)), 
+  mutate("celltype"=rep(gsub(".anno", "", names(gene_modules_df)),
                         sapply(gene_modules_df, nrow)))
 
 pdf(file.path(outdir, "coexpression_ORA_genesets.pdf"), height = 8)
 lapply(c("MSM", "SSM"), function(ct){
-  gene_modules_df %>% 
+  gene_modules_df %>%
     select(c('module', 'mean_lfc_cis', 'mean_lfc_int', 'freq_w_pairs', 'celltype')) %>%
     melt() %>%
     filter(celltype==ct) %>%
@@ -876,11 +1410,11 @@ lapply(c("MSM", "SSM"), function(ct){
              gsub("int", "CIS-Treatment", .)) %>%
     mutate(freq_w_pairs=gsub(",", "\n", freq_w_pairs)) %>%
     ggplot(., aes(y=freq_w_pairs, x=value, fill=variable)) +
-      geom_bar(position="dodge", stat="identity") + 
+      geom_bar(position="dodge", stat="identity") +
       facet_grid(rows=vars(module), scales = "free") +
       xlim(-5,5) +
       theme(axis.text.x = element_text(size=5)) +
-      ggtitle(ct) + 
+      ggtitle(ct) +
       xlab("mean-LFC") + ylab("") +
       theme_classic()
 })
