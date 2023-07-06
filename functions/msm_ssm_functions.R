@@ -38,9 +38,13 @@ calcMeanAUC <- function(AUC, cellAnnotation){
 # condition, given a matrix of both.
 aucPlot <- function(int_i, grp2_i, grp1_i=NULL, regulons=NULL,  new_ids=NULL,
                     celltype=NULL, auc_pattern="CIS|PBS|LN|TDLN|DAB|DMSO",  
-                    delta_grp1="delta.tdln_ln", delta_grp2='delta.auc'){
-  delta_col <- c('delta_int'='#f03b20',
-                 'delta_cis'='#636363')
+                    delta_grp1="delta.tdln_ln", delta_grp2='delta.auc', 
+                    delta_col=NULL){
+  if(is.null(delta_col)){
+    delta_col <- c('delta_int'='#f03b20',
+                   'delta_cis'='#636363')
+  }
+  
   
   intx <- reshape2::melt(int_i) %>%
     mutate(Regulon=as.character(Regulon))
@@ -94,7 +98,7 @@ aucPlot <- function(int_i, grp2_i, grp1_i=NULL, regulons=NULL,  new_ids=NULL,
   gg_grp2_delta <- .pltDelta(grp2x, delta_var=delta_grp2, new_id=new_ids[2], col=delta_col[2], xlim=0.5)
   
   
-  plot_grid(gg_auc, gg_grp2_delta, gg_grp1_delta, nrow=1,
+  plot_grid(gg_auc, gg_grp1_delta, gg_grp2_delta, nrow=1,
             align = "h", axis='bt', rel_widths = c(3,1,1))
 }
 
@@ -155,18 +159,68 @@ aucPlotSingle <- function(int_i, regulons=NULL,  new_ids=NULL,
 
 # Stand alone function to create a demo plot fo the barplots and how to 
 # interpret the results
-demoAucPlot <- function(){
+demoAucPlot <- function(grp1='A1', grp2='B1'){
   variables <- c("CIS.tdln", "PBS.tdln", "CIS.ln", "PBS.ln")
   demo_int <- data.frame("Regulon"="TF-X (10g)",
                          "variable"=factor(variables, levels=variables),
                          "value"=c(0.6, 0.4, 0.7, 0.2))
-  df <- rbind(demo_int[c(1,3),], demo_int)
-  df$group <- c('1', '1', '2', '2', '3', '3')
-  demo_delta_cis <- data.frame("Regulon"="TF-X (10g)",
-                               "value"=0.4)
-  demo_delta_int <- data.frame("Regulon"="TF-X (10g)",
-                               "value"=-0.3)
   
+  grps <- setNames(c(grp1, grp2), c('grp1', 'grp2'))
+  
+  # -- Set up all the comparison lines and comparison barplots
+  grps_barplots <- list()
+  grps_cols <- c()
+  grps_lbl <- c()
+  delta_lines <- as.data.frame(matrix(nrow=0, ncol=4)) %>%
+    magrittr::set_colnames(., c('Regulon', 'variable', 'value', 'group'))
+  for(grp_i in grps){
+    grp_idx <- match(grp_i, grps)
+    if(grp_i=='B1'){
+      # B1: tdln_sm_delta: difference between Cis and PBS for [MS]SM_TDLN
+      grps_barplots[[paste0("grp", grp_idx)]] <- data.frame("Regulon"="TF-X (10g)",
+                                                            "value"=0.2)
+      delta_line_tmp <- demo_int[demo_int$variable %in% c("CIS.tdln", "PBS.tdln"),]
+      grps_cols <- c(grps_cols, 'indianred1')
+      grps_lbl <- c(grps_lbl, "TDLN [Cis-PBS]")
+    } else if(grp_i=='B2'){
+      # B2: ln_sm_delta: difference between Cis and PBS for [MS]SM_LN
+      grps_barplots[[paste0("grp", grp_idx)]] <- data.frame("Regulon"="TF-X (10g)",
+                                                            "value"=0.5)
+      delta_line_tmp <- demo_int[demo_int$variable %in% c("CIS.ln", "PBS.ln"),]
+      grps_cols <- c(grps_cols, 'orangered2')
+      grps_lbl <- c(grps_lbl, "LN [Cis-PBS]")
+    } else if(grp_i=='A1'){
+      # A1: cis_sm_delta: difference between TDLN and LN for CIS_[MS]SM
+      grps_barplots[[paste0("grp", grp_idx)]] <- data.frame("Regulon"="TF-X (10g)",
+                                                            "value"=-0.1)
+      delta_line_tmp <- demo_int[demo_int$variable %in% c("CIS.tdln", "CIS.ln"),]
+      grps_cols <- c(grps_cols, 'paleturquoise3')
+      grps_lbl <- c(grps_lbl, "Cis [TDLN-LN]")
+    } else if(grp_i=='A2'){
+      # A2: pbs_sm_delta: difference between TDLN and LN for PBS_[MS]SM
+      grps_barplots[[paste0("grp", grp_idx)]] <- data.frame("Regulon"="TF-X (10g)",
+                                                            "value"=0.2)
+      delta_line_tmp <- demo_int[demo_int$variable %in% c("PBS.tdln", "PBS.ln"),]
+      grps_cols <- c(grps_cols, 'royalblue2')
+      grps_lbl <- c(grps_lbl, "PBS [TDLN-LN]")
+    } else if(grp_i=='C') {
+      # C: int_sm_delta: difference between Cis and PBS for MSM_[TD]LN,
+      #     [a] TDLN: delta(Cis-PBS)
+      #     [b]   LN: delta(Cis-PBS)
+      #        Delta: [a] - [b]; TDLN_Delta(Cis-PBS) - LN_Delta(Cis-PBS) 
+      grps_barplots[[paste0("grp", grp_idx)]] <- data.frame("Regulon"="TF-X (10g)",
+                                                            "value"=(0.2 - 0.5))
+      delta_line_tmp <- demo_int[demo_int$variable %in% c('CIS.tdln', 'CIS.ln', "PBS.tdln", "PBS.ln"),]
+      grps_cols <- c(grps_cols, c('gray30', 'gray50'))
+      grps_lbl <- c(grps_lbl, "TDLN[Cis-PBS] - LN[Cis-PBS]")
+      grp_idx <- c(rep(grp_idx,2), rep(grp_idx+1,2))
+    }
+    delta_line_tmp$group <- grp_idx
+    delta_lines <- rbind(delta_lines, delta_line_tmp)
+  }
+  delta_lines$group <- factor(delta_lines$group)
+  
+  # -- Plot all the barplots and comparisons
   gg_auc <- ggplot(demo_int, aes(x=value, y=variable, fill=variable)) +
     geom_bar(position='dodge', stat='identity') +
     theme_classic() +
@@ -180,9 +234,9 @@ demoAucPlot <- function(){
     theme(legend.position='none',
           axis.title.y=element_text(margin = margin(t = 0, r = 50, b = 0, l = 0)))
   gg_auc <- gg_auc + 
-    geom_point(data = df, aes(x=value, y=variable)) +
-    geom_line(data = df, aes(x=value, y=variable, group=group, col=group), size=2) +
-    scale_color_manual(values=c('#636363', '#e31a1c', '#fd8d3c'))
+    geom_point(data = delta_lines, aes(x=value, y=variable)) +
+    geom_line(data = delta_lines, aes(x=value, y=variable, group=group, col=group), size=2) +
+    scale_color_manual(values=grps_cols)
   
   .pltDelta <- function(x, ylab, xlim, col){
     ggplot(x, aes(x=value, y=Regulon)) +
@@ -196,13 +250,14 @@ demoAucPlot <- function(){
             axis.title.x=element_text(size=8),
             axis.text.x=element_text(angle=90))
   }
-  gg_cis_delta <- .pltDelta(demo_delta_cis, "Delta (Cis_TDLN-LN)", 0.5, '#636363')
-  gg_int_delta <- .pltDelta(demo_delta_int, "Delta (TDLN-LN)", 0.5, '#f03b20')
+  gg_cis_delta <- .pltDelta(grps_barplots[[1]], grps_lbl[1], 0.5, grps_cols[1]) # '#636363')
+  gg_int_delta <- .pltDelta(grps_barplots[[2]], grps_lbl[2], 0.5, grps_cols[2]) # '#f03b20')
   
   plot_grid(gg_auc, gg_cis_delta, gg_int_delta, nrow=1,
             align = "h", axis='bt', rel_widths = c(3,1,1))
   
 }
+
 
 # Small function to take the Interaction-term delta and the Cis_TDLN-LN
 # delta, combine the values into their mean-absolute-value per regulon, and 

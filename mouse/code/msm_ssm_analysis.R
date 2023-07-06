@@ -1,4 +1,6 @@
 ## Sara's MSM_SSM project
+library(DOSE)
+library(extrafont)
 library(WGCNA)
 library(cowplot)
 library(igraph)
@@ -15,9 +17,11 @@ library(ggplot2)
 library(msigdbr)
 library(SCENIC)
 
+###############
+#### Setup ####
 # SCENIC params
 scenic_org_code <- 'mgi'
-rcis_db <- '/cluster/projects/mcgahalab/ref/scenic/mm10__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather'
+rcis_db <- '/cluster/projects/mcgahalab/ref/scenic/cistarget_db/version1/mm10__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather'
 
 # Create ENZ -> SYMBOL mapping key
 genome_gse <- org.Mm.eg.db
@@ -31,14 +35,22 @@ entrez2ens_ids <- setNames(names(ens2entrez_ids), ens2entrez_ids)
 
 txby <- keys(genome_gse, 'SYMBOL')
 ens_ids <- mapIds(genome_gse, keys=txby, column='ENSEMBL',
-                   keytype='SYMBOL', multiVals="first")
+                  keytype='SYMBOL', multiVals="first")
 sym2ens_ids <- ens_ids
 sym2entrez_ids <- mapIds(genome_gse, keys=txby, column='ENTREZID',
-                  keytype='SYMBOL', multiVals="first")
+                         keytype='SYMBOL', multiVals="first")
 entrez2sym_ids <- setNames(names(sym2entrez_ids), sym2entrez_ids)
 
+# Read in gtf file to map ENS->Biotype
+gtf <- '/cluster/projects/mcgahalab/ref/genomes/mouse/GRCm38/GTF/genome.gtf'
+GTF <- rtracklayer::import(gtf)
+ens2biotype_ids <- with(GTF, setNames(gene_biotype, gene_id))
+# GTF_gene <- GTF[which(GTF$type=='gene' & GTF$gene_biotype=='protein_coding'),]
+# gene_length <- setNames(width(GTF_gene), GTF_gene$gene_name)
+
+
 # Params
-pdir <- "/cluster/projects/mcgahalab/data/mcgahalab/sara_MSM_SSM/results"
+pdir <- "/cluster/projects/mcgahalab/data/mcgahalab/st2_il33/mouse_MSM_SSM/results"
 dedir <- file.path(pdir, "diffexp")
 outdir <- file.path(pdir, "manual")
 dir.create(outdir, recursive = F, showWarnings = F)
@@ -55,7 +67,10 @@ celltypes <- setNames(celltypes,celltypes)
 source("~/git/mini_projects/mini_functions/wgcnaComplexHeatmap.R")
 source("~/git/mini_projects/mini_functions/iterateMsigdb.R")
 source("~/git/mini_projects/mini_functions/linearModelEigen.R")
+source("~/git/mini_projects/mini_functions/geneMap.R")
+source("~/git/mini_projects/mini_functions/gsea2CytoscapeFormat.R")
 source("~/git/st2_il33/functions/msm_ssm_functions.R")
+gm <- geneMap(species='Mus musculus') 
 
 ###################
 #### Functions ####
@@ -188,6 +203,29 @@ vizGSEA.hm <- function(gsea, lfc_v, topn=15){
     theme(axis.text.x = element_text(angle = 70, vjust = 1, hjust=1))
 }
 
+##########################################
+#### 0) Read in Counts and Other Data ####
+  cntsdir <- file.path(pdir, "counts")
+  
+  # colData and countData must have the same sample order, but this is ensured
+  # by the way we create the count matrix
+  cts <- read.table(file.path(cntsdir, "all.tsv"), header=TRUE, 
+                    row.names="gene", check.names=FALSE)
+  tpm <- read.table(file.path(cntsdir, "all_tpm.tsv"), header=TRUE, 
+                    row.names="gene", check.names=FALSE)
+  coldata <- read.table(file.path(pdir, "..", 'config', 'samples.tsv'), 
+                        header=TRUE, row.names="sample_name", check.names=FALSE)
+  if(any(colnames(cts) != rownames(coldata))){
+    # ensure coldata and cts are in the same sample order
+    coldata <- coldata[match(colnames(cts), rownames(coldata)),,drop=FALSE]
+  }
+  
+  coldata$lnstatus <-factor(gsub("-.*", "", coldata$condition), c("LN", "TDLN"))
+  coldata$treatment <- factor(gsub(".*-(.*)_.*", "\\1", coldata$condition), c('PBS', 'CIS'))
+  coldata$celltype <- gsub(".*_", "", coldata$condition)
+  coldata_l <- c(split(coldata, coldata$celltype), 
+                 list("All"=coldata))
+  
 #####################################################################
 #### 1) Comparison of LFC between LN (cis-PBS) to TDLN (cis-PBS) ####
 # Plot LFC of [LN Cis-to-PBS] compared to LFC of [TDLN Cis-to-PBS]
@@ -215,26 +253,11 @@ pdf(file.path(outdir, "LFC_ln-vs-tdln.pdf"))
 lapply(ggs, function(i) i)
 dev.off()
 
-######################################################################
+#####################################################################
 #### 2) Differential expression controlling for interaction terms ####
 cntsdir <- file.path(pdir, "counts")
 
-# colData and countData must have the same sample order, but this is ensured
-# by the way we create the count matrix
-cts <- read.table(file.path(cntsdir, "all.tsv"), header=TRUE, 
-                  row.names="gene", check.names=FALSE)
-coldata <- read.table(file.path(pdir, "..", 'config', 'samples.tsv'), 
-                      header=TRUE, row.names="sample_name", check.names=FALSE)
-if(any(colnames(cts) != rownames(coldata))){
-  # ensure coldata and cts are in the same sample order
-  coldata <- coldata[match(colnames(cts), rownames(coldata)),,drop=FALSE]
-}
-
-coldata$lnstatus <-factor(gsub("-.*", "", coldata$condition), c("LN", "TDLN"))
-coldata$treatment <- factor(gsub(".*-(.*)_.*", "\\1", coldata$condition), c('PBS', 'CIS'))
-coldata$celltype <- gsub(".*_", "", coldata$condition)
-coldata_l <- c(split(coldata, coldata$celltype), 
-               list("All"=coldata))
+coldata_treat_ln_l <- split(coldata, list(coldata$treatment, coldata$lnstatus))
 
 celltypes <- setNames(names(coldata_l), names(coldata_l))
 resl <- lapply(celltypes, function(celltype){
@@ -245,12 +268,12 @@ resl <- lapply(celltypes, function(celltype){
   coldata_l[[celltype]]$treatment <- relevel(coldata_l[[celltype]]$treatment, "PBS")
   coldata_l[[celltype]]$lnstatus <- relevel(coldata_l[[celltype]]$lnstatus, "LN")
   
-  dds <- DESeqDataSetFromMatrix(countData=cts[,rownames(coldata_l[[celltype]])],
+  dds_raw <- DESeqDataSetFromMatrix(countData=cts[,rownames(coldata_l[[celltype]])],
                                 colData=coldata_l[[celltype]],
                                 design=as.formula('~lnstatus+treatment+lnstatus:treatment'))
   
   # remove uninformative columns
-  dds <- dds[ rowSums(counts(dds)) > 1, ]
+  dds <- dds_raw[ rowSums(counts(dds_raw)) > 1, ]
   # normalization and preprocessing
   dds <- DESeq(dds)
   
@@ -357,7 +380,9 @@ resl <- lapply(celltypes, function(celltype){
   res$gene <- gene_ids[res$ens]
   res$gene[is.na(res$gene)] <- res$ens[is.na(res$gene)]
   
-  res_sdigits <- res
+  res_sdigits <- res %>%
+    mutate(biotype=ens2biotype_ids[res$ens]) %>%
+    relocate(c('gene', 'biotype'), .after=ens)
   for(col_i in colnames(res)){
     if(is.numeric(res[,col_i])){
       res_i <- res[,col_i]
@@ -369,8 +394,37 @@ resl <- lapply(celltypes, function(celltype){
   write.table(res_sdigits, file=file.path(outdir, paste0(celltype, "_degs.csv")), 
               col.names = T,row.names = F, quote=F, sep=",")
   saveRDS(res, file=file.path(outdir, "rds", paste0(celltype, "_degs.rds")))
-  return(list("res"=res, "dds_lnBase"=dds, "dds_tdlnBase"=dds2))
+  return(list("res"=res, "dds_lnBase"=dds_raw, "dds_tdlnBase"=dds2))
 })
+resl_msm_v_ssm <- lapply(coldata_treat_ln_l, function(col_grp){
+  col_grp$celltype <- factor(col_grp$celltype)
+  col_grp$celltype <- relevel(col_grp$celltype, "SSM")
+  
+  dds <- DESeqDataSetFromMatrix(countData=cts[,rownames(col_grp)],
+                                colData=col_grp,
+                                design=as.formula('~celltype'))
+  
+  # remove uninformative columns
+  dds <- dds[ rowSums(counts(dds)) > 1, ]
+  dds <- DESeq(dds)
+  
+  ## MAIN TREATMENT EFFECT 1
+  # celltype_MSM_vs_SSM
+  # Compares the differences between MSM and SSM celltypes under every condition
+  lbl <- with(col_grp, paste(lnstatus, treatment, sep="-")) %>% unique
+  reslfc_ct <- lfcShrink(dds, coef=resultsNames(dds)[2], type="apeglm") %>%
+    as.data.frame %>%
+    rename_with(., ~ paste0(., ".celltype_", lbl)) %>%
+    tibble::rownames_to_column(var='ens') 
+  return(list("dds"=dds, "res"=reslfc_ct))
+})
+res_msm_ssm <- lapply(resl_msm_v_ssm, function(i) i$res) %>% 
+  purrr::reduce(., full_join, by='ens') %>% 
+  mutate("symbol"=ens2sym_ids[ens]) %>%
+  relocate(ens, symbol)
+resl[['Celltype']] <- c(lapply(resl_msm_v_ssm, function(i) i$res),
+                        list("res"=res_msm_ssm))
+
 saveRDS(resl, file=file.path(outdir, "rds", "resl.rds"))
 saveRDS(coldata, file=file.path(outdir, "rds", "coldata.rds"))
 
@@ -400,18 +454,79 @@ if(do_demo){
 }
 
 
+######################################################
+#### 2.b) Overlap of sigGenes between MSM and SSM ####
+celltypes <- setNames(celltypes,celltypes)
+res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
+qval <- 0.001  # 0.05, 0.01, 0.001
+rm_gene_regex <- "^Gm[0-9]+$|^Fam[0-9]|^Olfr|^BC0|Rik$"
+
+
+# Find the MSM/SSM-only genes and those that intersect based on a sig.qvalue
+msm_res <- res_dds$MSM$res %>%
+  filter(!grepl(rm_gene_regex, gene))
+ssm_res <- res_dds$SSM$res %>%
+  filter(!grepl(rm_gene_regex, gene))
+
+.getSigGenes <- function(x){
+  x %>% 
+    filter(padj.interaction < qval,
+           abs(log2FoldChange.interaction) > 2) %>%
+    pull(ens)
+}
+msm_genes <- .getSigGenes(msm_res)
+ssm_genes <- .getSigGenes(ssm_res)
+all_genes <- unique(sort(c(msm_genes, ssm_genes)))
+
+msm_only_genes <- setdiff(msm_genes, ssm_genes)
+ssm_only_genes <- setdiff(ssm_genes, msm_genes)
+intersect_genes <- intersect(msm_genes, ssm_genes)
+
+# Create a new dataframe of the interaction MSM/SSM with their labels of overlap
+msm_ssm_overlap_res <- msm_res %>% 
+  filter(ens %in% all_genes) %>%
+  select(ens, baseMean.interaction, log2FoldChange.interaction, 
+         pvalue.interaction, padj.interaction) %>%
+  left_join(., ssm_res %>% 
+              filter(ens %in% all_genes) %>%
+              select(ens, baseMean.interaction, log2FoldChange.interaction, 
+                     pvalue.interaction, padj.interaction),
+            by='ens', suffix=c('.MSM', '.SSM')) %>%
+  mutate(gene=gm$ENSEMBL$SYMBOL[ens], 
+         biotype=ens2biotype_ids[ens],
+         overlap=ifelse(ens %in% msm_only_genes, 'MSM_only',
+                        ifelse(ens %in% ssm_only_genes, 'SSM_only', 'intersect'))) %>%
+  relocate(c(gene, biotype), .after=ens)
+
+  
+write.table(msm_ssm_overlap_res, file=file.path(outdir, paste0("overlap_interaction_degs.q", qval, ".csv")),
+            col.names = T,row.names = F, quote=F, sep=",")
+
+# inters <- make.unique(rep("intersect", 1508))
+# venn_x <- list("MSM"=c(make.unique(rep("MSM", 2555)), inters),
+#                "SSM"=c(make.unique(rep("SSM", 2937)), inters))
+# library(ggvenn)
+# pdf("~/Projects/mcgaha/st2_il33/results/mouse/sara_MSM-SSM/results/degs/overlap_MSM_SSM/ggvenn.pdf",
+#     height = 3)
+# ggvenn(
+#   venn_x, fill_color = c('#7b3294', '#008837'),
+#   stroke_size = 0.5, set_name_size = 4
+# )
+# dev.off()
+
 #################################
 #### 3) Gene set of interest ####
 resl <- readRDS(file.path(outdir, "rds", "resl.rds"))
+ref_dir <- '/cluster/projects/mcgahalab/data/mcgahalab/st2_il33/mouse_MSM_SSM/ref'
 
-st4_inflammatory_goi <- read.csv("/cluster/projects/mcgahalab/data/mcgahalab/sara_MSM_SSM/ref/st4_inflammatory.csv",
+st4_inflammatory_goi <- read.csv(file.path(pdir, "..", "ref", "st4_inflammatory.csv"),
                                  sep=",", header = F) %>%
   unlist() %>% as.character() %>% str_to_title()
-st4_antiinflammatory_goi <- read.csv("/cluster/projects/mcgahalab/data/mcgahalab/sara_MSM_SSM/ref/st4_antiinflammatory.csv",
+st4_antiinflammatory_goi <- read.csv(file.path(pdir, "..", "ref", "st4_antiinflammatory.csv"),
                                  sep=",", header = F) %>%
   unlist() %>% as.character() %>% str_to_title()
 
-list2_goi <- read.csv("/cluster/projects/mcgahalab/data/mcgahalab/sara_MSM_SSM/ref/list2.csv",
+list2_goi <- read.csv(file.path(pdir, "..", "ref", "list2.csv"),
                       sep=",", header = F) %>%
   unlist() %>% as.character() %>% str_to_title()
 
@@ -617,11 +732,15 @@ dev.off()
 celltypes <- setNames(celltypes,celltypes)
 res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
 gois <- readRDS(file.path(outdir, "goi.rds"))
+genes_to_include <- read.table(file.path(pdir, "..", "ref", "msm_ssm_gsea_genes", "msm_ssm.txt"),
+                               header = F, check.names = F) %>%
+  filter(!duplicated(V1))
+filter_genes <- FALSE
 
 msig_lvls <- list('H'=list(NULL),                       # hallmark gene sets
                   'C2'=list('CP:REACTOME'),             # curated gene sets
-                  'C5'=list('GO:BP', 'GO:CC', 'GO:MF'), # ontology gene sets
-                  'C7'=list('IMMUNESIGDB'))             # immunologic signature gene sets
+                  'C5'=list('GO:BP', 'GO:CC', 'GO:MF'))#, # ontology gene sets
+                  # 'C7'=list('IMMUNESIGDB'))             # immunologic signature gene sets
                   # 'C8'=list(NULL),                      # cell type signature gene sets
                   # 'custom'=list('custom'=gois))           # custom genesets
 q_thresh <- 0.2  # Threshold to select top genesets from
@@ -630,22 +749,32 @@ lfcs <- list("grp1"=c("interaction"='log2FoldChange.interaction',
                       "cis_tdln_ln"="log2FoldChange.cis_tdln-ln"),
              "grp2"=c("tdln_cis_pbs"="log2FoldChange.tdln_cis-pbs",
                       "pbs_tdln_ln"="log2FoldChange.pbs_tdln-ln"))
+lfcs <- list("grp1"=c("interaction"='log2FoldChange.interaction'))
 ct_res_gsea <- lapply(lfcs, function(lfc_cols){
   # lfc_cols <- c("interaction"='log2FoldChange.interaction',
   #               "cis_tdln_ln"="log2FoldChange.cis_tdln-ln")
+  ids <- gsub("_.*", "", names(lfc_cols))
   
   ct_res_gsea <- lapply(celltypes, function(celltype){
     print(celltype)
-    res <- res_dds[[celltype]]$res        # DESeq results data frame
+    res <- res_dds[[celltype]]$res #%>%
+    # mutate(biotype=ens2biotype_ids[ens]) %>%
+    # filter(biotype == 'protein_coding') # DESeq results data frame
+    if(filter_genes) res <- res %>% filter(ens %in% genes_to_include$V1)
     
     # Run GSEA using the LFC for the interaction and the CIS-treatment terms
     gsea <- lapply(lfc_cols, function(lfc_col){
       lfc_v <- setNames(res[,lfc_col],
                         ens2entrez_ids[res$ens])
       
-      iterateMsigdb(species='Mus musculus', msig_lvls=msig_lvls, 
-                    fun=gseaFun, lfc_v=lfc_v)
+      gsea_v <- iterateMsigdb(species='Mus musculus', msig_lvls=msig_lvls, 
+                              fun=gseaFun, lfc_v=lfc_v)
+      # return(list("gsea"=gsea_v, "lfc"=lfc_v))  # for GSEA2cytoscape
+      return(gsea_v)  # for standard GSEA
     })
+#   })  # for GSEA2cytoscape
+#   return(ct_res_gsea)  # for GSEA2cytoscape
+# })  # for GSEA2cytoscape
     
     # Merge the GSEA values between the two terms, select values that are 
     # significant below a certain threshold for each term
@@ -659,7 +788,6 @@ ct_res_gsea <- lapply(lfcs, function(lfc_cols){
           select(ID, setSize, NES, p.adjust, rank, leading_edge) %>%
           rename_with(., ~ paste0(., ".", id), .cols=matches("[^ID]", perl=T))
       }
-      ids <- gsub("_.*", "", names(lfc_cols))
       gsea_m <- tryCatch({
         full_join(int_gsea %>% 
                     as.data.frame() %>%
@@ -667,9 +795,7 @@ ct_res_gsea <- lapply(lfcs, function(lfc_cols){
                   cis_gsea %>% 
                     as.data.frame() %>%
                     .isolateGsea(., ids[2]),
-                  by='ID') %>%
-          filter(!!as.symbol(paste0("p.adjust.", ids[1])) < q_thresh & 
-                   !!as.symbol(paste0("p.adjust.", ids[2])) < q_thresh) %>%
+                  by='ID') %>% 
           mutate(geneset=geneset_lvl,
                  celltype=celltype)
       }, error=function(e){NULL})
@@ -677,12 +803,92 @@ ct_res_gsea <- lapply(lfcs, function(lfc_cols){
     })
     names(gsea_merge) <- names(gsea[[1]])
     
-    return(gsea_merge)
+    gsea_merge_sig <- lapply(gsea_merge, function(gsea_m){
+      tryCatch({
+        gsea_m %>%
+          filter(!!as.symbol(paste0("p.adjust.", ids[1])) < q_thresh & 
+                   !!as.symbol(paste0("p.adjust.", ids[2])) < q_thresh)
+      }, error=function(e){NULL})
+    })
+    
+    return(list("gsea"=gsea_merge, "gsea_sig"=gsea_merge_sig))
   })
 })
-saveRDS(ct_res_gsea, file=file.path(outdir, "GSEA-response.rds"))
+# saveRDS(ct_res_gsea_bkup, file=file.path(outdir, "GSEA-response2.rds"))
+# saveRDS(ct_res_gsea, file=file.path(outdir, "GSEA-response.rds"))
+saveRDS(ct_res_gsea, file=file.path(outdir, "GSEA-response.selectedGenes.2cyto.rds"))
+saveRDS(ct_res_gsea, file=file.path(outdir, "GSEA-response.allGenes.2cyto.rds"))
+# ct_res_gsea <- readRDS(file.path(outdir, "GSEA-response.rds"))
+ct_res_gsea <- readRDS(file.path(outdir, "GSEA-response.selectedGenes.2cyto.rds"))
+# ct_res_gsea_bkup <- readRDS(file.path(outdir, "GSEA-response2.rds"))
+ct_res_gsea_bkup <- readRDS(file.path(outdir, "GSEA-response.selectedGenes.2cyto.rds"))
+ct_res_gsea_bkup <- readRDS(file.path(outdir, "GSEA-response.allGenes.2cyto.rds"))
+ct_res_gsea_bkup <- ct_res_gsea_bkup$grp1
 
-ct_res_gsea <- readRDS(file.path(outdir, "GSEA-response.rds"))
+gs_map <- .mapGsToExactSource(species="Mus musculus")
+for(celltype in names(ct_res_gsea_bkup)){
+  print(celltype)
+  dir.create(file.path(outdir, "gse", "cytoscape"), recursive = T, showWarnings = F)
+  
+  ## Format the GSEA Ranks
+  ranks <- ct_res_gsea_bkup[[celltype]]$interaction$lfc
+  ranks <- data.frame(ranks) %>%
+    dplyr::rename_with(., ~"rank") %>%
+    mutate(GeneName=gm$ENTREZID$SYMBOL[names(ranks)]) %>% 
+    relocate(GeneName) %>% 
+    filter(!duplicated(GeneName),
+           !is.na(GeneName)) %>%
+    arrange(desc(rank))
+  
+  ## Format the TPM for the included samples
+  coldata_i <- coldata %>% filter(celltype==!!celltype)
+  tpm_i <- tpm %>% 
+    select(rownames(coldata_i)) %>%
+    tibble::rownames_to_column("ens") %>% 
+    mutate(GeneName=gm$ENSEMBL$SYMBOL[ens],
+           Description=ens2biotype_ids[ens]) %>% 
+    filter(Description=='protein_coding') %>% 
+    select(-c(ens)) %>% 
+    relocate(c('GeneName', 'Description')) %>% 
+    filter(!duplicated(GeneName),
+           !is.na(GeneName)) %>%
+    left_join(x = ranks[,1,drop=F], 
+              y=., by='GeneName') %>%
+    rename_with(., .fn = ~c("Name", 'Description', make.unique(coldata_i$condition)))
+  tpm_i[is.na(tpm_i)] <- 0
+  
+  ## Format the GSEA Enrichment Scores
+  gsea_l <- unlist(ct_res_gsea_bkup[[celltype]]$interaction$gsea, recursive=F)
+  gsea_df <- do.call(rbind, lapply(gsea_l[grep("REACTOME", names(gsea_l))], as.data.frame))
+  gsea_df <- do.call(rbind, lapply(gsea_l, as.data.frame))
+  gsea_dat_i <- gsea2CytoscapeFormat(gsea_df, gs_map)
+  fileConn<-file(file.path(outdir, "gse", "cytoscape", 
+                           paste0("meta.", celltype, ".cls")))
+  # writeLines(paste(c(nrow(coldata_i), 
+  #                    length(unique(coldata_i$condition)),
+  #                    "1"), collapse="\t"), fileConn)
+  # writeLines(paste0("#", paste(unique(coldata_i$condition), collapse="\t")), fileConn)
+  writeLines(paste(coldata_i$condition, collapse="\t"), fileConn)
+  close(fileConn)
+  write.table(tpm_i, 
+              file=file.path(outdir, "gse", "cytoscape", 
+                             paste0("tpm.", celltype, ".expression.txt")),
+              sep="\t", col.names = T, row.names = F, quote = F)
+  write.table(ranks, 
+              file=file.path(outdir, "gse", "cytoscape", 
+                             paste0("l2fc.", celltype, ".rnk")),
+              sep="\t", col.names = T, row.names = F, quote = F)
+  write.table(gsea_dat_i$up, 
+              file=file.path(outdir, "gse", "cytoscape", 
+                             paste0("gsea.", celltype, ".up.xls")),
+              sep="\t", col.names = T, row.names = F, quote = F)
+  write.table(gsea_dat_i$down, 
+              file=file.path(outdir, "gse", "cytoscape", 
+                             paste0("gsea.", celltype, ".down.xls")),
+              sep="\t", col.names = T, row.names = F, quote = F)
+}
+
+
 
 ## Collapse GSEA results to a single table per celltype
 grp_gsea_tbls_merge <- lapply(ct_res_gsea, function(grps){
@@ -801,6 +1007,13 @@ if(!file.exists(file.path("int", "3.4_regulonAUC.Rds"))){
 
 # Read in Regulon information
 regulonAUC <- loadInt(scenicOptions, "aucell_regulonAUC")
+regulon_genesets <- readRDS("int/2.6_regulons_asGeneSet.Rds")
+regulon_genesets_df <- lapply(names(regulon_genesets), function(i){
+  data.frame("Regulon"=i, "Genes"=regulon_genesets[[i]])
+}) %>% do.call(rbind, .)
+write.table(regulon_genesets_df, file=file.path("~/xfer/regulons_df.csv"),
+            sep=",", row.names = F, col.names = T, quote = F)
+
 # Set the sample-order plotting
 sample_ord <- coldata[with(coldata, order(celltype, lnstatus, treatment)),]
 
@@ -817,21 +1030,30 @@ names(rssPlots) <- colnames(coldata)
 
 # Identify regulons that are descriptive of the celltype,lnstatus,group and plot the 
 # normalized AUC values +/- sd for each group
-auc_l <- calcMeanAUC(getAUC(regulonAUC), cellAnnotation=coldata[colnames(regulonAUC),]$condition)
+auc_l <- calcMeanAUC(getAUC(regulonAUC), 
+                     cellAnnotation=coldata[colnames(regulonAUC),]$condition)
 thresh_auc <- auc_l$auc
-site_auc_grp <- thresh_auc %>% .splitFg(., 'fg3') # PBS or CIS_[MS]SM: compare between TDLN/LN
-trt_auc_grp <- thresh_auc %>% .splitFg(., 'fg1') # Interaction: compare between PBS/CIS
+# [LN|Tumor] _ [Cis|PBS] _ [MSM|SSM]
+#fg1: = paste(V3_V1): paste(MSM|SSM_LN|Tumor)
+#fg1: = paste(V2_V3): paste(CIS|PBS_MSM|SSM)
+site_auc_grp <- thresh_auc %>% .splitFg(., 'fg3') # Constant CIS_MSM: Compare between TDLN/LN
+trt_auc_grp <- thresh_auc %>% .splitFg(., 'fg1') # Constant MSM_LN: compare between PBS/Cis
 
-# Calculate delta-AUC_TDLN-LN between CIS_[MS]SM, TDLN and LN:
+#--- A1) Calculate delta-avgAUC (difference) between TDLN and LN for CIS_[MS]SM:
+# Returns: A list of MSM and SSM (both CIS)
+#          each dataframe (e.g. MSM) contains the LN and TDLN AUC, and the delta (TDLN-LN)
 cis_ids <- c("MSM"='CIS_MSM', "SSM"='CIS_SSM')
 cis_sm_delta <- lapply(cis_ids, function(grp_id){
+  # Create a regulon by LN,Tumor matrix; calculate Delta
   reshape2::dcast(site_auc_grp[[grp_id]],
                                 Regulon ~ V1, value.var='mean') %>%
     mutate(delta=TDLN-LN)  %>% 
     rename_with(., ~ paste0(., ".auc"), matches("[^Regulon]"))
 })
 
-# Calculate delta-AUC_TDLN-LN between PBS_[MS]SM: TDLN and LN [V1]:
+#--- A2) Calculate delta-avgAUC (difference) between TDLN and LN  for PBS_[MS]SM:
+# Returns: A list of MSM and SSM (both PBS)
+#          each dataframe (e.g. MSM) containts the LN and TDLN AUC, and the delta (TDLN-LN)
 pbs_ids <- c("MSM"='PBS_MSM', "SSM"='PBS_SSM')
 pbs_sm_delta <- lapply(pbs_ids, function(grp_id){
   reshape2::dcast(site_auc_grp[[grp_id]],
@@ -840,7 +1062,9 @@ pbs_sm_delta <- lapply(pbs_ids, function(grp_id){
     rename_with(., ~ paste0(., ".auc"), matches("[^Regulon]"))
 })
 
-# Calculate delta-AUC_CIS-PBS for TDLN_[MS]SM: CIS and PBS [V2]:
+#--- B1) Calculate delta-avgAUC (difference) between Cis and PBS for [MS]SM_TDLN:
+# Returns: A list of MSM and SSM (both TDLN)
+#          each dataframe (e.g. MSM) contains the Cis and PBS AUC, and the delta (Cis-PBS)
 tdln_ids <- c("MSM"='MSM_TDLN', "SSM"='SSM_TDLN')
 tdln_sm_delta <- lapply(tdln_ids, function(grp_id){
   reshape2::dcast(trt_auc_grp[[grp_id]],
@@ -849,7 +1073,25 @@ tdln_sm_delta <- lapply(tdln_ids, function(grp_id){
     rename_with(., ~ paste0(., ".auc"), matches("[^Regulon]"))
 })
 
-# Calculate delta(delta(AUC_CIS-PBS)) between Interactions [comparisons between PBS/CIS]:
+#--- B2) Calculate delta-avgAUC (difference) between Cis and PBS for [MS]SM_LN:
+# Returns: A list of MSM and SSM (both LN)
+#          each dataframe (e.g. MSM) contains the Cis and PBS AUC, and the delta (Cis-PBS)
+ln_ids <- c("MSM"='MSM_LN', "SSM"='SSM_LN')
+ln_sm_delta <- lapply(ln_ids, function(grp_id){
+  reshape2::dcast(trt_auc_grp[[grp_id]],
+                  Regulon ~ V2, value.var='mean') %>%
+    mutate(delta=CIS-PBS)  %>% 
+    rename_with(., ~ paste0(., ".auc"), matches("[^Regulon]"))
+})
+
+
+#--- C) Calculate delta-avgAUC (difference) between Cis and PBS for MSM_[TD]LN,
+# With that, calculate the distance between MSM_TDLN and MSM_LN corrected for Cis:
+# Returns: A list of MSM and SSM (contains both TLDN and LN)
+#   each dataframe contains:
+#     [a] TDLN: Cis, PBS, and delta(Cis-PBS)
+#     [b]   LN: Cis, PBS, and delta(Cis-PBS)
+#        Delta: [a] - [b]; TDLN_Delta(Cis-PBS) - LN_Delta(Cis-PBS) 
 int_ids <- list("MSM"=c('MSM_TDLN', 'MSM_LN'),
                 "SSM"=c('SSM_TDLN', 'SSM_LN'))
 int_sm_delta <- lapply(int_ids, function(grp_id){
@@ -865,76 +1107,103 @@ int_sm_delta <- lapply(int_ids, function(grp_id){
   full_join(auc_tdln, auc_ln, by='Regulon') %>%
     mutate("delta.tdln_ln"=delta.tdln - delta.ln)
 })
-regulon_aucs <- list("interaction"=int_sm_delta,
-                     "tdln_cis_pbs"=tdln_sm_delta,
-                     "pbs_tdln_ln"=pbs_sm_delta,
-                     "cis_tdln_ln"=cis_sm_delta)
+
+regulon_aucs <- list("interaction"=int_sm_delta,   # C [B1 - B2]
+                     "tdln_cis_pbs"=tdln_sm_delta, # B1 TDLN Cis-x-PBS
+                     "ln_cis_pbs"=ln_sm_delta,     # B2 LN Cis-x-PBS
+                     "pbs_tdln_ln"=pbs_sm_delta,   # A2 PBS TDLN-x-LN
+                     "cis_tdln_ln"=cis_sm_delta)   # A1 Cis TDLN-x-LN
 saveRDS(regulon_aucs, file=file.path(outdir, "regulon", "regulon_auc.rds"))
 
-
-# Interaction + CIS_TDLN-LN regulon AUC plots
-grp1_regulons <- .getRegulons(intx=reshape2::melt(int_sm_delta$MSM),
-                              cisx=reshape2::melt(cis_sm_delta$MSM)) %>%
+regulon_aucs <- readRDS(file.path(outdir, "regulon", "regulon_auc.rds"))
+# [Cis TDLN-x-LN] + [Interaction] regulon AUC plots   [A1, C]
+{
+grp1_regulons <- .getRegulons(intx=reshape2::melt(regulon_aucs$interaction$MSM),
+                              cisx=reshape2::melt(regulon_aucs$cis_tdln_ln$MSM)) %>%
   tail(., n=10)
 gg_grp1_auc_plot <- lapply(setNames(celltypes,celltypes), function(ct){
-  aucPlot(int_i=int_sm_delta[[ct]], grp2_i=cis_sm_delta[[ct]], 
-          new_ids=c('(Interaction)', '(Cis_TDLN-LN)'), 
+  aucPlot(int_i=regulon_aucs$interaction[[ct]], 
+          grp1_i=regulon_aucs$cis_tdln_ln[[ct]], grp2_i=regulon_aucs$interaction[[ct]], 
+          new_ids=c('(Cis_TDLN-LN)', '(Interaction)'), 
           celltype=ct, regulons = grp1_regulons,
-          delta_grp1="delta.tdln_ln", delta_grp2='delta.auc')
+          delta_grp1="delta.auc", delta_grp2='delta.tdln_ln',
+          delta_col=c('paleturquoise3','gray30'))
 })
+}
 
-# PBS_TDLN-LN + TDLN_CIS-PBS regulon AUC plots
-grp2_regulons <- .getRegulons(cisx=reshape2::melt(pbs_sm_delta$MSM),
-                              intx=reshape2::melt(tdln_sm_delta$MSM),
+# [PBS TDLN-x-LN] + [TDLN Cis-x-PBS] regulon AUC plots  [A2, B1]
+{
+grp2_regulons <- .getRegulons(cisx=reshape2::melt(regulon_aucs$pbs_tdln_ln$MSM),
+                              intx=reshape2::melt(regulon_aucs$tdln_cis_pbs$MSM),
                               delta_int='delta.auc') %>%
   tail(., n=10)
 gg_grp2_auc_plot <- lapply(setNames(celltypes,celltypes), function(ct){
-  aucPlot(int_i=int_sm_delta[[ct]],
-          grp1_i=pbs_sm_delta[[ct]], grp2_i=tdln_sm_delta[[ct]], 
-          new_ids=c('(PBS_TDLN-LN)', '(TDLN_CIS-PBS)'), 
+  aucPlot(int_i=regulon_aucs$interaction[[ct]],
+          grp1_i=regulon_aucs$pbs_tdln_ln[[ct]], grp2_i=regulon_aucs$tdln_cis_pbs[[ct]], 
+          new_ids=c('(PBS TDLN-LN)', '(TDLN Cis-PBS)'), 
           celltype=ct, regulons = grp2_regulons,
-          delta_grp1="delta.auc", delta_grp2='delta.auc')
+          delta_grp1="delta.auc", delta_grp2='delta.auc',
+          delta_col=c('royalblue2', 'indianred1'))
 })
+}
 
-grp3_regulons <- .getRegulons(cisx=reshape2::melt(pbs_sm_delta$MSM),
-                              intx=reshape2::melt(pbs_sm_delta$MSM),
+# [TDLN Cis-x-PBS] + [LN Cis-x-PBS] regulon AUC plots  [B1, B2]
+{
+grp3_regulons <- .getRegulons(cisx=reshape2::melt(regulon_aucs$tdln_cis_pbs$MSM),
+                              intx=reshape2::melt(regulon_aucs$ln_cis_pbs$MSM),
                               delta_int='delta.auc') %>%
   tail(., n=10)
 gg_grp3_auc_plot <- lapply(setNames(celltypes,celltypes), function(ct){
-  aucPlot(int_i=int_sm_delta[[ct]],
-          grp1_i=pbs_sm_delta[[ct]], grp2_i=tdln_sm_delta[[ct]], 
-          new_ids=c('(PBS_TDLN-LN)', '(TDLN_CIS-PBS)'), 
+  aucPlot(int_i=regulon_aucs$interaction[[ct]],
+          grp1_i=regulon_aucs$tdln_cis_pbs[[ct]], grp2_i=regulon_aucs$ln_cis_pbs[[ct]], 
+          new_ids=c('(TDLN Cis-PBS)', '(LN Cis-PBS)'), 
           celltype=ct, regulons = grp3_regulons,
-          delta_grp1="delta.auc", delta_grp2='delta.auc')
+          delta_grp1="delta.auc", delta_grp2='delta.auc',
+          delta_col=c('indianred1', 'orangered2'))
 })
+}
 
-grp4_regulons <- .getRegulons(cisx=reshape2::melt(tdln_sm_delta$MSM),
-                              intx=reshape2::melt(tdln_sm_delta$MSM),
+# [Cis TDLN-x-LN] + [PBS TDLN-x-LN] regulon AUC plots  [A1, A2]
+{
+grp4_regulons <- .getRegulons(cisx=reshape2::melt(regulon_aucs$cis_tdln_ln$MSM),
+                              intx=reshape2::melt(regulon_aucs$pbs_tdln_ln$MSM),
                               delta_int='delta.auc') %>%
   tail(., n=10)
 gg_grp4_auc_plot <- lapply(setNames(celltypes,celltypes), function(ct){
-  aucPlot(int_i=int_sm_delta[[ct]],
-          grp1_i=pbs_sm_delta[[ct]], grp2_i=tdln_sm_delta[[ct]], 
-          new_ids=c('(PBS_TDLN-LN)', '(TDLN_CIS-PBS)'), 
+  aucPlot(int_i=regulon_aucs$interaction[[ct]],
+          grp1_i=regulon_aucs$cis_tdln_ln[[ct]], grp2_i=regulon_aucs$pbs_tdln_ln[[ct]], 
+          new_ids=c('(Cis TDLN-LN)', '(PBS TDLN-LN)'), 
           celltype=ct, regulons = grp4_regulons,
-          delta_grp1="delta.auc", delta_grp2='delta.auc')
+          delta_grp1="delta.auc", delta_grp2='delta.auc',
+          delta_col=c('paleturquoise3','royalblue2'))
 })
+}
 
 
 # Do the plotties
 ## Regulon-AUC values and their corresponding delta's between CIS and Interaction
 pdf(file.path(outdir, "regulon", "scenic_regulons.pdf"), width = 13, height = 6)
+# pdf(file.path("~/xfer", "scenic_regulons2.pdf"), width = 13, height = 6)
 gg_grp1_aucs <- plot_grid(plotlist=gg_grp1_auc_plot, nrow=1, align='h', axis='bt')
 gg_grp2_aucs <- plot_grid(plotlist=gg_grp2_auc_plot, nrow=1, align='h', axis='bt')
 gg_grp3_aucs <- plot_grid(plotlist=gg_grp3_auc_plot, nrow=1, align='h', axis='bt')
 gg_grp4_aucs <- plot_grid(plotlist=gg_grp4_auc_plot, nrow=1, align='h', axis='bt')
-gg_demo <- plot_grid(demoAucPlot(), ncol=2)
-plot_grid(gg_demo, gg_grp1_aucs, nrow=2, align='v', axis='lr', rel_heights = c(1,3.5))
-plot_grid(gg_demo, gg_grp2_aucs, nrow=2, align='v', axis='lr', rel_heights = c(1,3.5))
-plot_grid(gg_demo, gg_grp3_aucs, nrow=2, align='v', axis='lr', rel_heights = c(1,3.5))
-plot_grid(gg_demo, gg_grp4_aucs, nrow=2, align='v', axis='lr', rel_heights = c(1,3.5))
+plot_grid(plot_grid(demoAucPlot('A1', 'C'), ncol=2), 
+          gg_grp1_aucs, nrow=2, align='v', axis='lr', rel_heights = c(1,3.5))
+plot_grid(plot_grid(demoAucPlot('A2', 'B1'), ncol=2), 
+          gg_grp2_aucs, nrow=2, align='v', axis='lr', rel_heights = c(1,3.5))
+plot_grid(plot_grid(demoAucPlot('B1', 'B2'), ncol=2), 
+          gg_grp3_aucs, nrow=2, align='v', axis='lr', rel_heights = c(1,3.5))
+plot_grid(plot_grid(demoAucPlot('A1', 'A2'), ncol=2), 
+          gg_grp4_aucs, nrow=2, align='v', axis='lr', rel_heights = c(1,3.5))
 dev.off()
 
+write.table(int_sm_delta$MSM, 
+            file=file.path("~/xfer", "MSM.regulon_delta.csv"),
+            sep=",", quote=F, row.names = F, col.names = T)
+write.table(int_sm_delta$SSM, 
+            file=file.path("~/xfer", "SSM.regulon_delta.csv"),
+            sep=",", quote=F, row.names = F, col.names = T)
 ## Regulon-RSS values marking their group-specificity
 pdf(file.path(outdir, "regulon", "scenic_regulons_RSS.pdf"))
 lapply(rssPlots, function(i) i$plot$plot)
@@ -1023,6 +1292,398 @@ for(celltype in celltypes){
               file=file.path(outdir, "regulon_deg", "regulon_deg.node.tsv"),
               sep="\t", col.names=T, row.names = F, quote = F)
 }
+
+###########################
+#### 8) Final Figures: ####
+#--- Fig1.a: Heatmap for MSM and SSM ----
+order_type <- 'alphabetical'
+merge_replicates <- FALSE
+
+dir.create(file.path(outdir, "final_figures"), showWarnings = F)
+goi <- c('Ahr','Ahrr','Arg1','Arg2','Get3','Asns','Atg10','Atg12','Atg16l1',
+         'Atg3','Atg5','Atg7','Becn1','Ccr7','Ddit3','Cyp1a1','Cyp1b1',
+         'Ppp1r15a','Gadd45b','Gcn1','Hif1a','Il10','Il12a',
+         'Il1b','Il6','Mmp9','Nbr1','Sqstm1','Slc38a2',
+         'Ido1','Ido2', 'Nos2') #, is too low expressed
+goi <- c('Il10',  'Il2ra', 'Il2rb', 'Il5', 'Il6', 'Il12a', 'Il12b', 'Il17a',
+         'Il17f', 'Il18', 'Ccr2', 'Ccl22', 'Ccl2', 'Ccl3', 'Ccl4', 'Ccl5',
+         'Ccl11', 'Cxcl1', 'Cxcl2',  'Cxcl9',  'Cxcl10', 'Cxcl11',
+         'Ido1', 'Ido2', 'Ahr', 'Cyp1a1', 'Cyp1b1', 'Asns', 'Ddit3')
+goi <- c('Il10',  'Cd274', 'Pdcd1lg2', 'Tgfb3', 'Ccl22', 
+         'Cxcl9', 'Il1rn', 'Ido1', 'Ido2', 'Cyp1a1', 'Cyp1b1', 'Ahr', 'Ddit3',
+         'Il6', 'Il1b', 'Ccr2', 'Il17f', 'Il17a', 'Cd80', 'Tnfsf4', 'Ccl3', 
+         'Ccl4', 'Cxcl2','Il2ra', 'Il2rb', 'Ccl2', 'Cxcl10', 'Cxcl1', 
+         'Tnfsf18', 'Icosl') # Tracy list
+goi <- c('Il10', 'Cd274', 'Pdcd1lg2', 'Tgfb3', 'Ccl17', 'Mrc1', 'Il18bp',
+         'Il1rn', 'Ccl22', 'Anxa1', 'Ffar4', 'Tnfaip6', 'Il1r2', 'Vsir',
+         'Il4', 'Lif', 'Tnfaip3', 'Havcr2', 'Lilrb4a', 
+         'Ido1', 'Ido2', 'Cyp1a1', 'Cyp1b1', 'Ahr', 'Asns', 'Ddit3',
+         'Il1b', 'Ccr2', 'Il17f', 'Il17a', 'Fas', 'Fasl', 'Tnfsf10', 'Cd80',
+         'Tnfsf4', 'Ccl3', 'Ccl4', 'Cxcl2', 'Il2ra', 'Il2rb', 'Ccl5', 'Ccl2',
+         'Cxcl10', 'Cxcl1', 'Tnfsf18', 'Icosl', 'Il2', 'Nlrp3', 'Il17ra', 'Il17rb',
+         'Lilra5', 'Trem1', 'Il12a', 'Il12b', 'Il5', 'Il6', 'Ccl1', 'Cxcl9')
+goi <- c('Il10', 'Tgfb3', 'Mrc1', 'Ido1', 'Ido2', 'Cyp1a1', 'Cyp1b1', 'Asns',
+         'Ddit3', 'Il18bp', 'Pdcd1lg2', 'Cd274', 'Ccl17', 'Il1rn', 'Vsir',
+         'Il4', 'Tnfaip3', 'Havcr2', 'Lilrb4a', 'Ahr', 'Il1b', 'Ccr2', 'Il17f',
+         'Tnfsf4', 'Ccl3', 'Ccl4', 'Ccl2', 'Nlrp3', 'Il6', 'Cd80', 'Il12ra',
+         'Il12rb1', 'Il2', 'Trem1', 'Cxcl10', 'Il17ra', 'Il12b')
+celltype_order <- c('SSM', 'MSM')
+lnstatus_order <- c('LN', 'TDLN')
+treatment_order <- c('PBS', 'CIS')
+
+celltypes <- setNames(celltypes,celltypes)
+res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
+cts <- read.table(file.path("counts", "all_tpm.tsv"), header=TRUE,
+                  row.names="gene", check.names=FALSE, stringsAsFactors = F)
+
+annotation_colors=list(
+  LNstatus = c('TDLN'='#7fbc41', 'LN'='#de77ae'), # pink, green
+  Treatment = c('Cisplatin'='#006d2c', 'Untreated'='#a1d99b'), # light-green, dark-green
+  Celltype=c('SSM'='white', 'MSM'='black')  
+)
+res_celltype <- res_dds[[c('All')]]
+
+cat(paste0("Params: \n\t order_type = ", order_type, 
+           "\n\t merge_replicates = ", merge_replicates, "\n"))
+row_ord <- NULL # Set to NULL if you want to cluster the genes
+# row_ord <- seq_along(goi) # Specify an order if you want to keep that gene-order
+heatmaps <- lapply(res_dds[c('All')], function(res_celltype){
+  dds <- res_celltype$dds_lnBase 
+  celltype_id <- unique(colData(dds)$celltype) %>%
+    paste(., collapse="_")
+  
+  cnt_mat <- assay(dds)
+  cnt_mat_goi <- cnt_mat %>%
+    as.data.frame %>% 
+    tibble::rownames_to_column(., "id") %>%
+    mutate(id=ens2sym_ids[id]) %>%
+    # filter(id %in% goi) %>% 
+    filter(!duplicated(id),
+           !is.na(id)) %>%
+    tibble::column_to_rownames(., "id")
+  cat(paste0("Genes not in your GOI: ", 
+             paste(goi[!goi %in% rownames(cnt_mat_goi)], collapse="\n")), "\n")
+  
+  vst_assay <- vst(cnt_mat, blind=T)
+  vst_assay_goi <- vst_assay %>% 
+    as.data.frame %>%
+    tibble::rownames_to_column(., "id") %>%
+    mutate(id=ens2sym_ids[id]) %>%
+    # filter(id %in% goi) %>% 
+    filter(!duplicated(id),
+           !is.na(id)) %>%
+    tibble::column_to_rownames(., "id")
+  vst_assay_mat <- as.matrix(cnt_mat_goi)
+  vst_assay_mat <- as.matrix(vst_assay_goi)
+  storage.mode(vst_assay_mat) <- 'numeric'
+  # cor_vst <- cor(t(vst_assay_mat), method='spearman')
+  # cor_vst['Il33',] %>% round(., 3) %>% sort %>% tail(., 50) %>% as.matrix
+  
+  vst_grp_goi_list <- split(as.data.frame(t(vst_assay_goi)),#[goi,])), 
+                       colData(dds)$condition)
+  if(merge_replicates){
+    # Merge biological replicates into one group average
+    vst_grp_goi <- vst_grp_goi_list %>%
+      lapply(., colMeans) %>%
+      do.call(rbind, .) %>% t
+  } else {
+    # Keep biological replicates separate and annotate accordingly
+    vst_grp_goi <- vst_grp_goi_list %>% 
+      do.call(rbind, .) %>% 
+      t %>% as.data.frame %>%
+      rename_with(., ~make.unique(gsub("\\..*", "", .)))
+  }
+  
+  # setdiff(goi, rownames(vst_grp_goi))  # Check if any goi are not found in the matrix
+  annotation_col <- colnames(vst_grp_goi) %>% 
+    gsub("\\..*", "", .) %>% 
+    strsplit(., split="-|_") %>% 
+    do.call(rbind, .) %>% as.data.frame  %>%
+    rename_with(., ~c('LNstatus', 'Treatment', 'Celltype')) %>%
+    mutate(Celltype = factor(Celltype, levels=celltype_order),
+           LNstatus = factor(LNstatus, levels=lnstatus_order),
+           Treatment = factor(Treatment, levels=treatment_order))
+  treatment_anno_order <- c('Untreated', 'Cisplatin')
+  if(treatment_order[1] == 'CIS') treatment_anno_order <-  rev(treatment_anno_order)
+  levels(annotation_col$Treatment) <- treatment_anno_order
+  order_idx <- with(annotation_col, order(Celltype, LNstatus, Treatment))
+
+  
+  
+  print(row_ord)
+  if(is.null(row_ord)) {
+    row_ord <<- switch(order_type,
+                       cis_pbs_diff=(order(vst_grp_goi[,'TDLN-CIS_MSM'] - vst_grp_goi[,'TDLN-PBS_MSM'])),
+                       alphabetical=(order(rownames(vst_grp_goi))))
+  }
+  
+  return(list("matrix"=vst_grp_goi[row_ord, order_idx], "annotation_col"=annotation_col[order_idx,]))
+}) 
+
+# Annotation Meta
+annotation_col <- do.call(rbind, lapply(heatmaps, function(i) i$annotation_col))
+annotation_col$split <- with(annotation_col, paste0(Celltype, LNstatus))
+annotation_col$split <- factor(annotation_col$split, levels=unique(annotation_col$split))
+
+# Normalize for a condition (i.e. Cis-PBS)
+lnidx <- grep("^LN", annotation_col$LNstatus)
+tdlnidx <- grep("^TDLN", annotation_col$LNstatus)
+raw_vst <- heatmaps$All$matrix
+colnames(raw_vst) <- with(annotation_col, paste(LNstatus, Celltype, Treatment, sep="_"))
+scaled_vst <- t(apply(heatmaps$All$matrix, 1, scale))
+colnames(scaled_vst) <- with(annotation_col, paste(LNstatus, Celltype, Treatment, sep="_"))
+scaled_grp_goi <- heatmaps$All$matrix[,tdlnidx] - heatmaps$All$matrix[,lnidx]
+scaled_grp_goi <- t(apply(scaled_grp_goi, 1, scale))
+# scaled_grp_goi <- scaled_grp_goi[which(goi %in% rownames(scaled_grp_goi)),]
+colnames(scaled_grp_goi) <- with(annotation_col[lnidx,], 
+                                 paste(Celltype, Treatment, sep="_")) %>% 
+  make.unique
+
+###### Important segment: Outputs the res datastructure for Sara to make heatmaps
+# res <- list("raw_vst"=raw_vst,
+#             "scaled_vst"=scaled_vst,
+#             "cnt_mat"=scaled_grp_goi,
+#             "ens2sym_ids"=ens2sym_ids,
+#             "raw_condition"=annotation_col,
+#             "condition"=annotation_col[lnidx,])
+# saveRDS(res, file=file.path("~/xfer/res.rds"))
+
+gg_phm <- ComplexHeatmap::pheatmap(as.matrix(scaled_grp_goi), scale = 'none',
+                         color = colorRampPalette(c("#053061", "#4393c3", "#f7f7f7", 
+                                                    "#d6604d", "#67001f"))(20),
+                         annotation_col = annotation_col[lnidx,],
+                         column_split= annotation_col[lnidx,]$split,
+                         annotation_colors = annotation_colors,
+                         fontsize_row = 14,show_colnames = FALSE,
+                         use_raster=FALSE, cluster_cols = FALSE, cluster_rows = FALSE
+) %>% 
+  ggplotify::as.ggplot(.) +
+  theme_minimal(base_family = "Arial")
+  
+# pdf(file.path(outdir, "final_figures", "msm_ssm_heatmap_gois.pdf"), width =9)
+pdf(file.path("~/xfer", "msm_ssm_heatmap_gois.y.pdf"), height = 12, width =4.5)
+gg_phm
+dev.off()
+
+#--- Fig1.b: GSEA for MSM and SSM ----
+plot_classical_gsea <- FALSE
+
+## Read in gene sets
+dirto <- '/cluster/projects/mcgahalab/data/mcgahalab/st2_il33/mouse_MSM_SSM/ref/genesets'
+# inf <- read.table(file.path(dirto, "inflamm_gene_2.txt"), header = F) %>%
+#   mutate(V1=str_to_title(V1))
+# antiinf <- read.table(file.path(dirto, "antiinflamm_gene_2.txt"), header = F) %>%
+#   mutate(V1=str_to_title(V1))
+# bus.antiinf <- read.table(file.path(dirto, "buscher_antiinflamm.txt"), header = F) %>%
+#   mutate(V1=str_to_title(V1))
+# mariejo_up <- read.table(file.path(dirto, "mariejo_up.csv"), header = F) %>%
+#   mutate(V1=str_to_title(V1))
+# mariejo_dn <- read.table(file.path(dirto, "mariejo_down.csv"), header = F) %>%
+#   mutate(V1=str_to_title(V1))
+# barton <- read.table(file.path(dirto, "barton_2017_fig3d.csv"), header = F) %>%
+#   mutate(V1=str_to_title(V1))
+bus.inf <- read.table(file.path(dirto, "buscher_inflamm.txt"), header = F) %>%
+  mutate(V1=str_to_title(V1))
+rahul_dn <- read.table(file.path(dirto, "rahul_up.csv"), header = F) %>%
+  mutate(V1=str_to_title(V1)) # Rahul's test conditions are reversed from ours
+rahul_up <- read.table(file.path(dirto, "rahul_down.csv"), header = F) %>%
+  mutate(V1=str_to_title(V1)) # Rahul's test conditions are reversed from ours
+
+genesets <- list("Buscher.Inflammatory"=bus.inf$V1, 
+                    "Rahul_down"=rahul_dn$V1, "Rahul_up"=rahul_up$V1)
+# genesets <- list("Buscher.Inflammatory"=bus.inf$V1, 
+#                  "Rahul.Tolerogenic"=unique(c(rahul_dn$V1, rahul_up$V1)))
+                 #"Buscher.Anti-inflammatory"=bus.antiinf$V1,
+                 #"MarieJo_M2_down"=mariejo_dn$V1, "MarieJo_M2_up"=mariejo_up$V1,
+                 #"Barton_2017"=barton$V1
+
+geneset_df <- lapply(names(genesets), function(id){
+  data.frame("geneset"=id, "genes"=genesets[[id]])
+}) %>% 
+  do.call(rbind, .)
+msig_lvls <- list('custom'=genesets)
+
+res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
+gsea_res <- lapply(c('SSM', 'MSM'), function(celltype){
+  res <- res_dds[[celltype]]$res %>%
+    mutate(biotype=ens2biotype_ids[ens]) %>%
+    filter(biotype=='protein_coding')
+  gene_id <- res$gene
+  # abslfc <- abs(res$log2FoldChange.interaction) * (-1*log10(res$padj.interaction + 0.0001))
+  lfc <- res$log2FoldChange.interaction#  * (-1*log10(res$padj.interaction + 0.0001))
+  lfc_genes <- setNames(lfc, gene_id)
+  
+  gseaFun <- function(msig_ds, lfc_v){
+    gsea <- tryCatch({
+      GSEA(sort(na.omit(lfc_v), decreasing = T), 
+           TERM2GENE = msig_ds, pvalueCutoff = 1, maxGSSize=1000)
+    }, error=function(e){NULL})
+    return(gsea)
+  }
+  oras <- iterateMsigdb(species='Mus musculus', fun=gseaFun, 
+                        lfc_v=lfc_genes, msig_lvls=msig_lvls)
+  
+  .mkgseval <- function(x){
+    do.call(rbind, x) %>% 
+      mutate(celltype=celltype,
+             group=ifelse(grepl("Inflammatory", Description), "Inflammatory", "Tolerogenic"))
+  }
+  gseval <- lapply(oras$custom, function(i) i@result) %>% .mkgseval
+  
+  # merge up and down tolerogenic signatures
+  {
+    gseval_l <- split(gseval, f=gseval$group)
+    tolero <- gseval_l$Tolerogenic
+    upidx <- sapply(c('up', 'down'), grep, x=tolero$ID)
+    tolero$enrichmentScore <- as.numeric(tolero$enrichmentScore)
+    tolero$NES <- as.numeric(tolero$NES)
+    tolero_es <- rbind(tolero[upidx['up'], c('enrichmentScore', 'NES')],
+                       (-1*tolero[upidx['down'], c('enrichmentScore', 'NES')])) %>%
+      colMeans
+    pvals <- c(with(tolero, if(NES[upidx['up']] > 0) pvalue[upidx['up']] else 0.99), 
+               with(tolero, if(NES[upidx['down']] < 0) pvalue[upidx['down']] else 0.99))
+    tolero_p <- metap::sumz(p=as.numeric(pvals))$p %>%
+      as.numeric
+                
+    
+    tolero[3,] <- with(tolero,
+                       c(rep('Rahul.Tolerogenic', 2), 
+                         sum(as.numeric(setSize)), tolero_es, 
+                         rep(tolero_p, 2),
+                         NA, NA, NA, paste(core_enrichment, collapse="/"),
+                         unique(celltype), unique(group)))
+    gseval <- rbind(gseval_l$Inflammatory, tolero[3,,drop=F])
+  }                
+  
+  if(plot_classical_gsea){
+    pdf(file.path("~/xfer/", paste0("sara_gsea_plots.", celltype, ".pdf"))); 
+    for(tit in names(oras$custom)){
+      x <- gseaplot2(oras$custom[[tit]], geneSetID = 1, 
+                     title=tit, pvalue_table=F)
+      print(x)
+    }
+    gseaplot2(oras_tolerogenic$custom[['Rahul.Tolerogenic']], geneSetID = 1, 
+              title='Tolerogenic', pvalue_table=F)
+    gseaplot2(oras_inflammatory$custom[['Buscher.Inflammatory']], geneSetID = 1, 
+              title='Inflammatory', pvalue_table=F)
+    dev.off()
+  }
+  
+  return(gseval)
+})
+
+gsea_resm <- do.call(rbind, gsea_res) %>%
+  mutate(qvalues=round(p.adjust(pvalue, method='BH'),2),
+         celltype=factor(celltype, levels=c('SSM', 'MSM')),
+         vjust=ifelse(NES>0, 1.5,0),
+         NES=as.numeric(NES)) %>%
+  mutate(sig=ifelse((qvalues > 0.05), "", ifelse(qvalues > 0.01, " * ", "***")))
+
+pdf("~/xfer/sara_gsea_nes.pdf", height = 4)
+ggplot(gsea_resm, aes(x=NES, y=ID, color=celltype, fill=celltype, group=celltype, label=sig)) +
+  facet_grid(group~., scales = 'free', space = 'free', switch='y') +
+  geom_bar(stat='identity', position='dodge', alpha=0.8) +
+  geom_text(aes(vjust=vjust), position = position_dodge(width = 1), 
+            hjust=0.5, angle = 90, size = 10 / .pt) +
+  xlim(-2,2) + ylab("") +
+  theme_classic() +
+  scale_fill_manual(name="",  values=c('MSM'='gray25', 'SSM'='gray75')) +
+  scale_color_manual(name="",  values=c('MSM'='gray25', 'SSM'='gray75')) +
+  geom_vline(xintercept = 0, linetype = "dotted") +
+  theme(axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())
+dev.off()
+write.table(gsea_resm, file=file.path("~/xfer", "sara_gsea_nes.csv"),
+            quote = F, row.names = F, col.names = T, sep=",")
+
+
+#--- Fig2.b: Waterfall of select genes ----
+# Goal: Waterfall plot, showing the Log2FC MSM vs SSM for the LN-PBS for select genes
+dir.create(file.path(outdir, "final_figures"), showWarnings = F)
+goi <- c('Usp4', 'Sigirr', 'Pdlim1', 'Hes1', 'Arr1', 'Socs3', 
+         'Arrb2', 'Zfp36', 'Klf4', 'Dusp1')
+goi <- factor(goi, levels=goi)
+
+celltypes <- setNames(celltypes,celltypes)
+res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
+lfc_goi <- res_dds$Celltype$res %>%
+  filter(symbol %in% goi) %>%
+  dplyr::select(symbol, `log2FoldChange.celltype_LN-PBS`, `padj.celltype_LN-PBS`) %>%
+  rename_with(., ~c('symbol', 'logFC', 'padj')) %>%
+  mutate(symbol=factor(symbol, levels=goi),
+         sig=(padj < 0.05), 
+         dir=(logFC>0))
+b <- c(0, 5, 10, 20)
+
+pdf(file.path(outdir, "final_figures", "waterfall_celltypes_ln_pbs.pdf"), height = 3.4)
+pdf(file.path("~/xfer", "waterfall_celltypes_ln_pbs.pdf"), height = 3.4)
+ggplot(lfc_goi, aes(x=symbol, y=logFC, fill=logFC)) +
+  geom_bar(stat='identity', position='stack') +
+  geom_text(aes(label = ifelse(sig, "*", "")), 
+            position = position_dodge(width = .9), 
+            vjust = ifelse(lfc_goi$dir, 0.4, 1.2), size = 20 / .pt) +
+  scale_fill_gradientn(limits = c(-2,2),
+                       colours=c("#08519c", "grey", "#a50f15"),
+                       breaks=c(-2,0,2)) +
+  xlab("") +
+  theme_bw()
+dev.off()
+  
+
+
+#--- SFig2.b: Volcano Plot of SSM and MSM - DEGs for TDLN-CIS vs TDLN-PBS ----
+res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
+
+lfc_lim <- 2
+qval_lim <- 0.01
+maxq <- 100
+cols <- c("sigup"="#fc8d59", "sigdown"="#91bfdb")
+
+gg_volcanos <- lapply(c('MSM', 'SSM'), function(id){
+  res_dds_i <- res_dds[[id]]
+  res_dds_i$res %>%
+    dplyr::select(grep("padj", colnames(.), value=T)) %>%
+    apply(., 2, summary) %>% round(., 4)
+  res_df <- res_dds_i$res %>% 
+    dplyr::select(ens, gene, `log2FoldChange.interaction`, `padj.interaction`) %>%
+    rename_with(., ~c('ens', 'gene', 'logFC', 'FDR')) %>%
+    mutate(id=id,
+           log10FDR=(-1*log10(FDR)),
+           dir=ifelse(FDR<=qval_lim, 
+                      ifelse(logFC>=lfc_lim, 
+                             "sigup", 
+                             ifelse(logFC<=(-1*lfc_lim),
+                                    "sigdown", 
+                                    "nonsig")),
+                      "nonsig"))
+  res_df$log10FDR[res_df$log10FDR> maxq] <- maxq
+  
+  return(res_df)
+}) %>% do.call(rbind, .)
+  
+pdf(file.path(outdir, "degs", "msm_ssm.volcano.pdf"), height = 4)
+# pdf("~/xfer/msm_ssm.volcano.pdf", height = 4)
+ggplot(as.data.frame(gg_volcanos), aes(x=logFC, y=log10FDR, col=dir)) +
+  facet_wrap(vars(id), ncol=2) +
+  ggrastr::rasterise(geom_point(alpha=0.5)) +
+  scale_color_manual(values=cols) +
+  theme_classic() +
+  xlim(-20,20) +
+  geom_hline(yintercept = (-1*log10(qval_lim)), linetype = "dashed") +
+  geom_vline(xintercept = c((-1*lfc_lim), lfc_lim), linetype = "dashed") +
+  xlab("log2(Fold Change)") + ylab("-log10(q)") + ggtitle("Interaction") +
+  theme(legend.position='none')
+dev.off()
+
+lfc_goi <- res_dds$Celltype$res %>%
+  filter(symbol %in% goi) %>%
+  dplyr::select(symbol, `log2FoldChange.celltype_LN-PBS`, `padj.celltype_LN-PBS`) %>%
+  rename_with(., ~c('symbol', 'logFC', 'padj')) %>%
+  mutate(symbol=factor(symbol, levels=goi),
+         sig=(padj < 0.05), 
+         dir=(logFC>0))
+b <- c(0, 5, 10, 20)
+
 
 #########################################
 #### 7) WGCNA: Coexpression analysis ####
@@ -1548,4 +2209,3 @@ dev.off()
 
 
 
-#### X #####

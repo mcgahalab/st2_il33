@@ -1,3 +1,8 @@
+library(monocle3)
+library(parsnip)
+library(slingshot)
+library(tradeSeq)
+library(tidyr)
 library(msigdbr)
 library(BiocParallel)
 library(GenomicFeatures)
@@ -20,6 +25,7 @@ library("clusterProfiler")
 library("enrichplot")
 library(BSgenome.Mmusculus.UCSC.mm10)
 library(stringr)
+library(cellpypes)
 
 visualize <- FALSE
 seed <- 1234
@@ -43,93 +49,19 @@ sym2entrez_ids <- mapIds(genome_gse, keys=txby, column='ENTREZID',
                          keytype='SYMBOL', multiVals="first")
 entrez2sym_ids <- setNames(names(sym2entrez_ids), sym2entrez_ids)
 
+# Read in gtf file to map ENS->Biotype
+gtf <- '/cluster/projects/mcgahalab/ref/genomes/mouse/GRCm38/GTF/genome.gtf'
+GTF <- rtracklayer::import(gtf)
+ens2biotype_ids <- with(GTF, setNames(gene_biotype, gene_id))
 
 doublet_quantile_cutoff <- 0.95
-
-####################
-#### Annotation ####
-## Human
-anno_geneset <- list("DC"=list("up"=c("CLE4C", "CLEC10A", "CST3", "FCER1A", "HLA-DRA"),
-                               "down"=c("CD14")),
-                     "DC1"=list("up"=c("CLEC9A", "HLA-DRA", "XCR1"),
-                                "down"=c("CD14")),
-                     "Endothelial"=list("up"=c("CDH5", "CLEC14A", "PECAM1", "VWF"),
-                          "down"=c()),
-                     "Eosinophil"=list("up"=c("RNASE2", "CLC", "ADGRE1", "CFD", "CCL4", "PNPLA6",
-                                              "MARCKSL1", "SLC29A1", "PTGDR2"),
-                                       "down"=c()),
-                     "Erythrocyte"=list("up"=c("HBA2", "HBB"),
-                                        "down"=c()),
-                     "Exhaustion"=list("up"=c("CTLA4", "HAVCR2", "LAG3", "PDCD1", "TIGIT"),
-                                       "down"=c()),
-                     "ILC1"=list("up"=c("IL7R", "KLRB1"),
-                                 "down"=c("CD4E", "NKG7")),
-                     "ILC2"=list("up"=c("GATA3", "KIT", "MS4A2", "TPSAB1", "TPSB2"),
-                                 "down"=c("CD4E", "NKG7")),
-                     "ILC3"=list("up"=c("KLRB1", "NCR1", "NCR2", "RORC"),
-                                 "down"=c("CD4E", "NKG7")),
-                     "Mast cell"=list("up"=c("GATA2", "KIT", "MS4A2", "TPSAB1", "TPSB2"),
-                                      "down"=c()),
-                     "Monocyte"=list("up"=c("CD14", "CD300E", "DNM2", "FCN1", "S100A8", "VCAN"),
-                                     "down"=c("C1QC")),
-                     "Neutrophil"=list("up"=c("CPD", "CSF3R", "FCGR3B", "S100A8", "S100A9"),
-                                       "down"=c()),
-                     "NK"=list("up"=c("GNLY", "KLRD1", "NCAM1", "NKG7"),
-                               "down"=c("CD3E")),
-                     "pDC"=list("up"=c("GZMB", "HLA-DRA", "IL3RA", "TSPAN13"),
-                                "down"=c("CD14")),
-                     "Plasma cell"=list("up"=c("IGHA1", "IGHG2", "IGHG1", "JCHAIN", "TNFRSF17"),
-                                        "down"=c()),
-                     "Platelet"=list("up"=c("PPBP"),
-                                     "down"=c()),
-                     "TAM"=list("up"=c("CD14", "CD68", "LYZ", "HLA-DRA"),
-                                "down"=c()),
-                     "TAM M2-like"=list("up"=c("CD16", "CD68", "CD163", "HLA-DRA", "LYZ"),
-                                        "down"=c()))
-## Mouse
-anno_geneset <- list("DC"=list("up"=c("CLE4C", "CLEC10A", "CST3", "FCER1A", "H2-Eb1"),
-                               "down"=c("CD14")),
-                     "DC1"=list("up"=c("CLEC9A", "H2-Eb1", "XCR1"),
-                                "down"=c("CD14")),
-                     "Endothelial"=list("up"=c("CDH5", "CLEC14A", "PECAM1", "VWF"),
-                                        "down"=c()),
-                     "Eosinophil"=list("up"=c("RNASE2", "CLC", "ADGRE1", "CFD", "CCL4", "PNPLA6",
-                                              "MARCKSL1", "SLC29A1", "PTGDR2"),
-                                       "down"=c()),
-                     "Erythrocyte"=list("up"=c("HBA2", "HBB"),
-                                        "down"=c()),
-                     "Exhaustion"=list("up"=c("CTLA4", "HAVCR2", "LAG3", "PDCD1", "TIGIT"),
-                                       "down"=c()),
-                     "ILC1"=list("up"=c("IL7R", "KLRB1"),
-                                 "down"=c("CD4E", "NKG7")),
-                     "ILC2"=list("up"=c("GATA3", "KIT", "MS4A2", "TPSAB1", "TPSB2"),
-                                 "down"=c("CD4E", "NKG7")),
-                     "ILC3"=list("up"=c("KLRB1", "NCR1", "NCR2", "RORC"),
-                                 "down"=c("CD4E", "NKG7")),
-                     "Mast cell"=list("up"=c("GATA2", "KIT", "MS4A2", "TPSAB1", "TPSB2"),
-                                      "down"=c()),
-                     "Monocyte"=list("up"=c("CD14", "CD300E", "DNM2", "FCN1", "S100A8", "VCAN"),
-                                     "down"=c("C1QC")),
-                     "Neutrophil"=list("up"=c("CPD", "CSF3R", "FCGR3B", "S100A8", "S100A9"),
-                                       "down"=c()),
-                     "NK"=list("up"=c("GNLY", "KLRD1", "NCAM1", "NKG7"),
-                               "down"=c("CD3E")),
-                     "pDC"=list("up"=c("GZMB", "H2-Eb1", "IL3RA", "TSPAN13"),
-                                "down"=c("CD14")),
-                     "Plasma cell"=list("up"=c("IGHA1", "Ighg2b", "IGHG1", "JCHAIN", "TNFRSF17"),
-                                        "down"=c()),
-                     "Platelet"=list("up"=c("PPBP"),
-                                     "down"=c()),
-                     "TAM"=list("up"=c("CD14", "CD68", "LYZ1", "H2-Eb1"),
-                                "down"=c()),
-                     "TAM M2-like"=list("up"=c("FCGR3", "CD68", "CD163", "H2-Eb1", "LYZ1"),
-                                        "down"=c()))
 
 ###################
 #### Functions ####
 source("~/git/mini_projects/mini_functions/wgcnaComplexHeatmap.R")
 source("~/git/mini_projects/mini_functions/iterateMsigdb.R")
 source("~/git/mini_projects/mini_functions/linearModelEigen.R")
+source("/cluster/projects/mcgahalab/data/mcgahalab/st2_il33/scrna_tdln_tumor/scripts/doubletFinder_v4.R")
 
 ####################################
 #### 0.a Create Seurat objects  ####
@@ -236,117 +168,364 @@ if(!exists("seu")) seu <- readRDS(file=file.path(datadir, "seurat_obj", "seu_fil
 ## Apply DoubletFinder to every scRNA sample independently
 samples <- unique(seu$orig.ident)
 Idents(seu) <- 'orig.ident'
+gen_sct <- TRUE
+get_pk <- FALSE
+lbl <- 'label.main' #label.main, 'label.fine
+rds_dir <- if(gen_sct) 'sct_rds' else 'scale_rds'
 seu_doublet_list <- lapply(setNames(samples,samples), function(sample_i){
   seu_i <- subset(seu, idents=sample_i)
-  doublet_rds_f <- file.path(doublet_dir, paste0(sample_i, ".rds"))
+  doublet_rds_f <- file.path(doublet_dir, rds_dir, paste0(sample_i, ".rds"))
   
+  # Process doublets or read in existing files
   if(file.exists(doublet_rds_f)){
     print(paste0("Loading existing analysis: ", sample_i))
-    doublet <- readRDS(doublet_rds_f)
+    if(file.info(doublet_rds_f)$size>0){
+      doublet <- readRDS(doublet_rds_f)
+    } else {
+      print(paste0(" ... ", sample_i, " being processed in other node"))
+      doublet <- NULL
+    }
     return(doublet)
-  } 
+  } else {
+    print(paste0("DoubletFinding for sample: ", sample_i))
+    write.table(data.frame(), file=doublet_rds_f, col.names=FALSE)
+  }
   
   # pre-process
-  seu_i <- SCTransform(seu_i)
+  if(gen_sct){
+    seu_i <- SCTransform(seu_i)
+  } else{ 
+    seu_i <- NormalizeData(seu_i, normalization.method = "LogNormalize")
+    seu_i <- FindVariableFeatures(seu_i, selection.method = "vst", nfeatures = 2000)
+    seu_i <- ScaleData(object = seu_i, vars.to.regress = c("percent.mt"))
+  }
   seu_i <- RunPCA(seu_i, npcs=200)
   
-  stdev <- seu_i@reductions$pca@stdev
-  var <- stdev^2
-  PCNum <-  min(which(cumsum(var)/sum(var) >= 0.9))
+  dvar <- seu_i@reductions$pca@stdev^2
+  PCNum <- c(min(which(cumsum(dvar)/sum(dvar) >= 0.99)) + 1,
+             min(which(cumsum(dvar)/sum(dvar) >= 0.9)))
+  PCNum <- min(PCNum)
   
   seu_i <- FindNeighbors(object = seu_i, dims = 1:PCNum)
-  seu_i <- FindClusters(object = seu_i, resolution = 0.6)
+  res <- getResForStableSmallClus(seu_i)
+  seu_i <- FindClusters(object = seu_i, resolution = res)
   seu_i <- RunUMAP(seu_i, dims = 1:PCNum)
   
-  
   # cell-type identification
-  bed.se <- readRDS("/cluster/projects/mcgahalab/ref/scrna/scRNAseq_datasets/BlueprintEncodeData.rds") 
-  lbl <- 'label.fine' #label.main
-  mouse.bed.se <- bed.se
-  rownames(mouse.bed.se) <- str_to_title(rownames(bed.se))
-  blueprint_anno <- SingleR(test=GetAssayData(seu_i), ref=mouse.bed.se, 
-                            assay.type.test=1, labels=mouse.bed.se[[lbl]],
+  print("Identifying cell type")
+  bed.se <- readRDS("/cluster/projects/mcgahalab/ref/scrna/scRNAseq_datasets/immgen.rds") 
+  rownames(bed.se) <- str_to_title(rownames(bed.se))
+  
+  if(gen_sct) DefaultAssay(seu_i) <- 'RNA'
+  seu_i <- NormalizeData(seu_i, normalization.method = "LogNormalize")
+  blueprint_anno <- SingleR(test=GetAssayData(seu_i, assay = "RNA", slot = "data"), 
+                            ref=bed.se, 
+                            assay.type.test=1, labels=bed.se[[lbl]],
+                            de.method="wilcox", genes='sd',
                             clusters=seu_i$seurat_clusters)
-  cluster_ids <- setNames(blueprint_anno$labels, 
+  cluster_ids <- setNames(blueprint_anno$pruned.labels, 
                           as.character(rownames(blueprint_anno)))
-  seu_i@meta.data[,'blueprint'] <- cluster_ids[as.character(seu_i$seurat_clusters)]
+  cluster_ids[is.na(cluster_ids)] <- 'Unknown'
+  seu_i@meta.data[,'immgen_fine_cell'] <- cluster_ids[as.character(seu_i$seurat_clusters)]
   
   # pK identification
-  sweep_res_list <- paramSweep_v3(seu_i, PCs = 1:PCNum, sct = TRUE)
-  sweep_seu <- summarizeSweep(sweep_res_list, GT = FALSE)
-  bcmvn <- find.pK(sweep_seu)
-  pk <- as.numeric(as.character(bcmvn$pK[which.max(bcmvn$BCmetric)]))
-  
-  # pk <- bcmvn$pK[which.max(bcmvn[as.numeric(as.character(bcmvn$pK))<0.2,]$BCmetric)]
-  # pk <- as.numeric(as.character(pk))
-  # pk <- 0.11
+  if(gen_sct) DefaultAssay(seu_i) <- 'SCT'
+  sweep_res_list <- NULL
+  bcmvn <- NULL
+  k=100
+  pk <- round(k/ncol(seu_i),5)
   
   ## Homotypic Doublet Proportion Estimate
-  homotypic.prop <- modelHomotypic(seu_i$blueprint)    
-  nExp_poi <- round(0.016*nrow(seu_i@meta.data))  # assuming 3200 cells loaded https://github.com/chris-mcginnis-ucsf/DoubletFinder/issues/76
-  nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+  homotypic.prop <- modelHomotypic(seu_i$immgen_fine_cell)
+  nExp_poi <- getExpMultiplet(ncol(seu_i))  # multiplet chart from https://github.com/chris-mcginnis-ucsf/DoubletFinder/issues/76
+  nExp_poi.adj <- nExp_poi*(1-homotypic.prop)
   
-  seu_i <- doubletFinder_v3(seu_i, PCs = 1:PCNum, pN = 0.25, pK = pk,  # first bump under 0.1 from bcmvn_seu
-                            nExp = nExp_poi, reuse.pANN = FALSE, sct = TRUE)
+  seu_i <- doubletFinder_v4(seu_i, PCs = 1:PCNum, pN = 0.25, pK = pk,  # first bump under 0.1 from bcmvn_seu
+                            nExp = nExp_poi.adj, reuse.pANN = FALSE, sct = gen_sct,
+                            annotations=seu_i$immgen_fine_cell, grp.size=50)
+  seu_i$doublets <- seu_i@meta.data[,'DF.classifications']
+  bcds <- runBcds(seu_i, n=25)
+  seu_i$bcds <- bcds$bcds[,1]
+  cxds <- runCxds(seu_i, n=25)  
+  seu_i$cxds <- cxds$cxds$cxds
   
-  # seu_i@meta.data <- seu_i@meta.data[,-grep("28_28", colnames(seu_i@meta.data))]
-  seul <- list("seu"=seu_i, "sweep"=sweep_res_list, 
-               "pk"=pk, "nExp_poi"=nExp_poi, "bcmvn"=bcmvn)
+  seul <- list("seu"=seu_i, "sweep"=sweep_res_list,  "res"=res,
+               "homotypic.prop"=homotypic.prop, "nExp_poi.adj"=nExp_poi.adj,
+               "pk"=pk, "nExp_poi"=nExp_poi, "bcmvn"=bcmvn,
+               "bcds"=bcds$top_pairs, "cxds"=cxds$top_pairs)
   saveRDS(seul, file=doublet_rds_f)
-  return(seu_i)
+  return(seul)
 })
 
-if(visualize){
-  ggps <- lapply(seu_doublet_list, function(seu_i){
-    seu_i <- seu_i$seu
-    dp_dub <- DimPlot(seu_i, label = TRUE, repel = TRUE, reduction = "umap",
-                      group.by=grep("DF", colnames(seu_i@meta.data), value = T), pt.size=0.5, shuffle=TRUE)
-    dp_bp <- DimPlot(seu_i, label = TRUE, repel = TRUE, reduction = "umap",
-                     group.by="blueprint", pt.size=0.5, shuffle=TRUE)
-    plot_grid(plotlist=list(dp_dub+
-                              theme(legend.position='none') + 
-                              ggtitle(unique(seu_i$orig.ident)), 
-                            dp_bp+theme(legend.position='none')), ncol=2)
+
+
+{
+  # Set celltype colors
+  cell_cols <- getCellCols()
+  cells <- lapply(seu_doublet_list, function(i) unique(i$seu$immgen_fine_cell)) %>%
+    unlist %>% unique %>% sort
+  cell_cols_lbl <- lapply(names(cell_cols), function(cl){
+    cls <- grep(paste0("^", cl), cells, value=T)
+    setNames(cell_cols[[cl]](length(cls)), cls)
+  }) %>% unlist
+  
+  
+  # Contour maps
+  df_contours <- lapply(seu_doublet_list, function(seu_i){
+    doubletFinder_contour(seu_i$seu, rm.homotypic=FALSE, max.break=0.5) %>%
+      cowplot::plot_grid(plotlist=., ncol=4)
   })
   
-  pdf(file.path(outdir, "doublets", "doublet_umap.pdf"), height=18, width=7)
-  plot_grid(plotlist=ggps, nrow=length(ggps))
+  # Heatmap of ES per cluster
+  df_heatmap <-  lapply(seu_doublet_list, function(seu_i){
+    doubletFinder_heatmap(seu_i$seu, cell_cols_lbl)
+  })
+  
+  # Manual FeaturePlot review
+  Bcells <- c('CD79a', 'CD79b', 'CD19', 'EBF1' ) # cd45r
+  Tcells <- c('CD3D', 'CD3G', 'CD3e', 'CD4')
+  p <- stringr::str_to_title(unlist(c(Bcells, Tcells)))
+  df_featplots <- lapply(seu_doublet_list, function(seu_i){
+    FeaturePlot(seu_i$seu, features=p, pt.size=0.5, order=T, ncol=4)
+  })
+  
+  # SCDS gene-coexpression and binary doublet classifier
+  scds_scores <- c("bcds", "cxds")
+  df_scdsplots <- lapply(seu_doublet_list, function(seu_i){
+    FeaturePlot(seu_i$seu, features=scds_scores, 
+                pt.size=0.5, order=T, blend=T)
+  })
+  
+  # Plot everything
+  pdf("~/xfer/test13_feat.pdf", width = 15, height = 7)
+  df_featplots
   dev.off()
+  
+  pdf("~/xfer/test13_con.pdf", width = 12, height = 10)
+  df_contours
+  dev.off()
+  
+  pdf("~/xfer/test13_hm.pdf", width = 14)
+  df_heatmap
+  dev.off()
+  
+  pdf("~/xfer/test13_scds.pdf", height = 5)
+  df_scdsplots
+  dev.off()
+  
 }
 
 doublets <- sapply(seu_doublet_list, function(seu_i){
   seu_i <- seu_i$seu
-  dub_idx <- seu_i@meta.data[,grep("DF", colnames(seu_i@meta.data), value = T)] == 'Doublet'
+  ndoublets <- sum(seu_i$doublets == 'Doublet')
+  dub_idx <- seu_i@meta.data[,'doublets'] == 'Doublet'
   colnames(seu_i)[which(dub_idx)]
 }) %>% 
   unlist() %>% as.character()
 
 seu$doublets <- 'Singlet'
 seu@meta.data[which(colnames(seu) %in% doublets),'doublets'] <- 'Doublet'
-seu_dubsumm <- table(seu@meta.data[,c('orig.ident', 'doublets')])
-
-Idents(seu) <- 'doublets'
-seu <- subset(seu, idents='Singlet')
 saveRDS(seu, file=file.path(datadir, "seurat_obj", "seu_filt_dubrm.rds"))
 
-############################################
-#### 1.a Preprocessing the counts - RNA ####
+#########################################
+#### 1.a Integrate the scRNA samples ####
 # Preprocessing of the RNA counts
 if(!exists("seu")) seu <- readRDS(file=file.path(datadir, "seurat_obj", "seu_filt_dubrm.rds"))
 
-DefaultAssay(seu) <- "RNA"
+# split the dataset into a list of seurat objects by Sample ID
+seu.list <- SplitObject(seu, split.by = "orig.ident")
+
+# normalize and identify variable features for each dataset independently
+seu.list <- lapply(seu.list, function(seu_i){
+  # https://github.com/satijalab/seurat/issues/1739
+  seu_i <- SCTransform(seu_i, assay = 'RNA', new.assay.name = 'SCT', vst.flavor='v2',
+                       vars.to.regress = c('percent.mt'), conserve.memory = T) %>%
+    RunPCA(npcs = 30, verbose = FALSE) %>%
+    RunUMAP(reduction = "pca", dims = 1:30, verbose = FALSE) %>%
+    FindNeighbors(reduction = "pca", dims = 1:30, verbose = FALSE) %>%
+    FindClusters(resolution = 0.7, verbose = FALSE)
+  # seu_i <- CellCycleScoring(seu_i, s.features = str_to_title(cc.genes$s.genes), 
+  #                           g2m.features = str_to_title(cc.genes$g2m.genes),
+  #                           assay='SCT', set.ident = TRUE)
+  # seu_i$CC.Difference <- seu_i$S.Score - seu_i$G2M.Score
+  # seu_i <- SCTransform(seu_i, assay = 'RNA', new.assay.name = 'SCT',
+  #                      vars.to.regress = c('percent.mt', 'CC.Difference'),
+  #                      conserve.memory = T)
+  return(seu_i)
+})
+
+
+# Select integration features (genes)
+integration_features <- SelectIntegrationFeatures(object.list = seu.list, 
+                                                  nfeatures = 3000)
+seu.list <- PrepSCTIntegration(object.list = seu.list, 
+                               anchor.features = integration_features)
+
+# Find integration anchors across all samples based on variable features
+integration_anchors <- FindIntegrationAnchors(object.list = seu.list, 
+                                         normalization.method = "SCT",
+                                         anchor.features = integration_features)
+seu <- IntegrateData(anchorset = integration_anchors, 
+                     normalization.method = "SCT")
+# VariableFeatures(seu) <- integration_features
+seu <- RunPCA(seu, verbose = FALSE)
+seu <- RunUMAP(seu, reduction = "pca", dims = 1:50, n.neighbors=15L,
+               min.dist = 0.1)
+seu <- FindNeighbors(seu, reduction = "pca", dims = 1:50)
+seu <- FindClusters(seu, resolution = 1.1)
+
+
+saveRDS(seu, file=file.path(datadir, "seurat_obj", "2_seu_integratedX.rds"))
+seu <- readRDS(file=file.path(datadir, "seurat_obj", "2_seu_integratedX.rds"))
+
+############################################
+#### 1.b Preprocessing the counts - RNA ####
+# Preprocessing of the RNA counts
+if(!exists("seu")) seu <- readRDS(file=file.path(datadir, "seurat_obj", "2_seu_integrated.rds"))
+
+## Find Neighbours and Cluster 
+DefaultAssay(seu) <- 'integrated'
+seu <- RunPCA(seu, verbose = FALSE)
+# # Plot PCA
+# pdf("~/xfer/c4.pdf", width=20)
+# PCAPlot(seu,
+#         split.by = "orig.ident")
+# dev.off()
+
+#Confirm #PC's determined explain > 95% of variance
+var <- seu@reductions$pca@stdev^2
+dvar <- abs(diff(var))
+PCNum <- c(min(which(cumsum(dvar)/sum(dvar) >= 0.99)) + 1,
+           min(which(cumsum(var)/sum(var) >= 0.8)))
+PCNum <- 50 #80% of variance
+
+# Visualizing and selecting PCs
+visualize_pcs <- FALSE
+if(visualize_pcs){
+  pdf(file.path(outdir, "clusters", "pca_dimplot.pdf"))
+  pdf(file.path("~/xfer", "pca_dimplot.pdf"))
+  .getVar <- function(x) paste0(x, " (", round(max(cumsum(var)[1:x], na.rm=T)/sum(var) * 100,1), "%)")
+  for(dim in c(5, 10, 30, 60, 100, PCNum)){
+    seu <- RunUMAP(object = seu, dims = 1:dim, n.epochs=200L)
+    DimPlot(seu, label = FALSE, reduction = "umap", group.by="orig.ident") + ggtitle(.getVar(dim)) 
+  }
+  dev.off()
+}
+DefaultAssay(seu) <- 'integrated'
+seu <- RunUMAP(object = seu, dims = 1:PCNum[1], n.neighbors=15L,
+               min.dist = 0.1)
+# pdf("~/xfer/c5.pdf"); DimPlot(seu, label = FALSE, reduction = "umap",
+#                               group.by="seurat_clusters"); dev.off()
+seu <- FindNeighbors(seu, dims = 1:PCNum)
+seu <- FindClusters(seu, resolution = 1.5)
+seu <- BuildClusterTree(seu, reduction='pca')
+
+saveRDS(seu, file=file.path(datadir, "seurat_obj", "3_seu_sct.rds"))
+
+#-----------------------------------------------------------------------------
+DefaultAssay(seu) <- "integrated"
+seu <- ScaleData(seu, verbose = FALSE)
+seu <- RunPCA(seu, npcs = 200, verbose = FALSE)
+seu <- RunUMAP(seu, reduction = "pca", dims = 1:PCNum)
+seu <- FindNeighbors(seu, reduction = "pca", dims = 1:PCNum)
+seu <- FindClusters(seu, resolution = 1.5)
+# Annotate cells using SingleR
+bed.se <- readRDS("/cluster/projects/mcgahalab/ref/scrna/scRNAseq_datasets/immgen.rds") 
+overwrite <- TRUE
+scell_anno <- lapply(c('label.fine', 'label.main'), function(lbl){
+  rds_file <- paste0("celldex_immgen.", gsub("label.", "", lbl), ".cell.rds")
+  id <- gsub("^.*immgen(.*).rds", "immgen\\1", rds_file)
+  if(!file.exists(file.path(outdir, "annotation", rds_file)) | overwrite){
+    print(paste0(" Annotating: ", rds_file))
+    singler_anno <- SingleR(test=GetAssayData(seu), ref=bed.se, 
+                            assay.type.test=1, labels=bed.se[[lbl]],
+                            clusters=NULL)
+    saveRDS(singler_anno, file=rds_file)
+  } else {
+    singler_anno <- readRDS(file=rds_file)
+  }
+  return(setNames(list(singler_anno), id))
+}) %>% unlist(., recursive=F)
+for(id in names(scell_anno)){
+  seu@meta.data[,id] <- scell_anno[[id]]$labels
+}
+
+# Visualizing and selecting resolution
+resolutions <- c(0.01, 0.05, seq(0.1, 3.0, by=0.1))
+visualize_res <- FALSE
+if(visualize_res){
+  dps <- lapply(setNames(resolutions,resolutions), function(res){
+    seu <- FindClusters(object = seu, resolution = res)
+    dp <- DimPlot(seu, label = FALSE, reduction = "umap", group.by="seurat_clusters") + ggtitle(res) 
+    Jl <- lapply(names(scell_anno), function(id){
+      tbl <- table(seu$seurat_clusters, seu@meta.data[,id])
+      Jclus <- apply(tbl, 1, vegan::diversity) / log(ncol(tbl))
+      Jcelltype <- apply(tbl, 2, vegan::diversity) / log(nrow(tbl))
+      list("clus"=Jclus,
+           "celltype"=Jcelltype)
+    })
+    names(Jl) <- names(scell_anno)
+    Jl_dp <- list("Jl"=sapply(unlist(Jl, recursive=F), mean),
+                  "Jl_sd"=sapply(unlist(Jl, recursive=F), sd),
+                  "dp"=dp)
+    return(Jl_dp)
+  })
+  Jres <- sapply(dps, function(i) i$Jl)
+  Jres_sd <- sapply(dps, function(i) i$Jl_sd) 
+  
+    
+
+  pdf(file.path(outdir, "clusters", "res_dimplot.pdf"))
+  .meltAndLbl <- function(x){
+    melt(t(x)) %>%
+      mutate(dim=gsub("^.*\\.", "", Var2),
+             label=gsub("\\.[a-zA-Z]*$", "", Var2))
+  }
+  # full_join(.meltAndLbl(Jres),
+  #           .meltAndLbl(Jres_sd),
+  #           by=c('dim', 'label'), 
+  #           suffix=c('.mean', '.sd')) %>% 
+  .meltAndLbl(Jres) %>% 
+    ggplot(., aes(x=Var1, y=value, color=label)) +
+    facet_grid(dim ~ ., space = 'free', scales='free') +
+    geom_line() +
+    theme_classic() +
+    xlab('res') + ylab('J') + ylim(0,1) +
+    scale_x_continuous(breaks = seq(0,2,by=0.2)) +
+    theme(axis.text.x = element_text(angle=90))
+  
+  lapply(dps, function(i) i$dp)
+  dev.off()
+}
+vegan::diversity(c(100,1,1,1,1,1))/6
+do.call(rbind, dps)
+
+seu <- BuildClusterTree(seu, reduction='pca')
+
+saveRDS(seu, file=file.path(datadir, "seurat_obj", "3_seu_sct.rds"))
+seu <- readRDS(file=file.path(datadir, "seurat_obj", "3_seu_sct.rds"))
+
+
+#-----------------------------------------------------------------------------
+DefaultAssay(seu) <- "integrated"
+seu <- ScaleData(seu, verbose = FALSE)
+seu <- RunPCA(seu, npcs = 200, verbose = FALSE)
+seu <- RunUMAP(seu, reduction = "pca", dims = 1:PCNum)
+seu <- FindNeighbors(seu, reduction = "pca", dims = 1:PCNum)
+seu <- FindClusters(seu, resolution = 1.5)
+
 # https://github.com/satijalab/seurat/issues/1739
 seu <- SCTransform(seu, assay = 'RNA', new.assay.name = 'SCT',
-                   vars.to.regress = c('percent.mt', 'orig.ident'), conserve.memory = T) #nCount_RNA regressed in vst
+                   vars.to.regress = c('percent.mt'), conserve.memory = T) #nCount_RNA regressed in vst
 seu <- CellCycleScoring(seu, s.features = str_to_title(cc.genes$s.genes), 
                         g2m.features = str_to_title(cc.genes$g2m.genes),
                         assay='SCT', set.ident = TRUE)
 seu$CC.Difference <- seu$S.Score - seu$G2M.Score
 seu <- SCTransform(seu, assay = 'RNA', new.assay.name = 'SCT',
-                   vars.to.regress = c('percent.mt', 'CC.Difference', 'orig.ident'),
+                   vars.to.regress = c('percent.mt', 'CC.Difference'),
                    conserve.memory = T)
 
-## Find Neighbours and Cluster with HARMONY
+## Find Neighbours and Cluster 
 seu <- RunPCA(seu, npcs=200, verbose = FALSE)
 
 #Confirm #PC's determined explain > 95% of variance
@@ -356,6 +535,24 @@ PCNum <-  min(which(cumsum(var)/sum(var) >= 0.9))
 
 seu <- FindNeighbors(object = seu, dims = 1:PCNum)
 seu <- RunUMAP(object = seu, dims = 1:PCNum, n.epochs=200L)
+seu <- FindClusters(object = seu, resolution = 1.5)
+seu <- BuildClusterTree(seu, reduction='pca')
+# clusters <- sapply(dps, function(i) i$cluster) %>% 
+#   as.matrix() %>% as.data.frame() %>%
+#   rename_with(., ~ resolutions)
+
+DefaultAssay(seu) <- 'RNA'
+seu <- NormalizeData(seu, normalization.method = "LogNormalize", 
+                     scale.factor = median(seu$nCount_RNA))
+seu <- ScaleData(object = seu, vars.to.regress = c("nCount_RNA", "percent.mt"))
+
+saveRDS(seu, file=file.path(datadir, "seurat_obj", "3_seu_sct.rds"))
+seu <- readRDS(file=file.path(datadir, "seurat_obj", "3_seu_sct.rds"))
+
+
+
+
+
 
 resolutions <- seq(0.1, 2.0, by=0.1)
 dps <- lapply(resolutions, function(res){
@@ -421,11 +618,28 @@ saveRDS(seu, file=file.path(datadir, "seurat_obj", "seu_preprocess.rds"))
 
 ###########################################
 #### 1.b Cell type annotation - ImmGen ####
-if(!exists("seu")) seu <- readRDS(file.path(datadir, "seurat_obj", "seu_preprocess.rds"))
+# if(!exists("seu")) seu <- readRDS(file.path(datadir, "seurat_obj", "seu_preprocess.rds"))
+if(!exists("seu"))seu <- readRDS(file=file.path(datadir, "seurat_obj", "3_seu_sct.rds"))
 
 dir.create(file.path(outdir, "annotation"))
-getBlueprint <- TRUE
-if(getBlueprint){
+getImmgen <- TRUE
+overwrite <- TRUE
+
+# RNA preprocess and cell-cycle score
+DefaultAssay(seu) <- 'RNA'
+seu <- NormalizeData(seu,
+                     normalization.method = "LogNormalize")
+seu <- CellCycleScoring(seu, s.features = str_to_title(cc.genes$s.genes), 
+                        g2m.features = str_to_title(cc.genes$g2m.genes),
+                        assay='RNA', set.ident = TRUE)
+seu <- FindVariableFeatures(seu, 
+                            selection.method = "vst",
+                            nfeatures = 2000, 
+                            verbose = FALSE)
+seu <- ScaleData(seu)
+
+
+if(getImmgen){
   #ref <- BlueprintEncodeData()
   #saveRDS(ref, file="~/downloads/BlueprintEncodeData.rds")
   bed.se <- readRDS("/cluster/projects/mcgahalab/ref/scrna/scRNAseq_datasets/immgen.rds") 
@@ -433,223 +647,1015 @@ if(getBlueprint){
   for(lbl in c('label.fine', 'label.main')){
     for(clus in c(TRUE, FALSE)){
       rds_file <- paste0("celldex_immgen.", gsub("label.", "", lbl),
-                         ".", if(clus) 'cluster' else 'cell', ".rds")
-      id <- gsub("^.*immgen(.*).rds", "bp\\1", rds_file)
-      if(!file.exists(file.path(outdir, "annotation", rds_file))){
-        print(rds_file)
-        singler_anno <- SingleR(test=GetAssayData(seu), ref=bed.se, 
-                                  assay.type.test=1, labels=bed.se[[lbl]],
-                                  clusters=if(clus) seu$seurat_clusters else NULL)
+                         ".", if(clus) 'cluster' else 'cell', "X.rds")
+      id <- gsub("^.*immgen(.*).rds", "immgen\\1", rds_file)
+      if(!file.exists(file.path(outdir, "annotation", rds_file)) | overwrite){
+        print(paste0(" Annotating: ", rds_file))
+        singler_anno <- SingleR(test=GetAssayData(seu, assay = "RNA", slot = "data"), 
+                                ref=bed.se, 
+                                assay.type.test=1, labels=bed.se[[lbl]],
+                                de.method="wilcox", genes='sd',
+                                clusters=if(clus) seu$seurat_clusters else NULL)
         saveRDS(singler_anno, file=file.path(outdir, "annotation", rds_file))
       } else {
+        print(paste0(" Reading in annotation: ", rds_file))
         singler_anno <- readRDS(file.path(outdir, "annotation", rds_file))
+        # pdf("~/xfer/test3.pdf", width=15)
+        # plotScoreHeatmap(singler_anno, show_colnames=TRUE)
+        # dev.off()
       }
       
       if(clus){
-        cluster_ids <- setNames(singler_anno$labels, 
+        cluster_ids <- setNames(singler_anno$pruned.labels, 
                                 as.character(rownames(singler_anno)))
         seu@meta.data[,id] <- cluster_ids[as.character(seu$seurat_clusters)]
       } else {
-        seu@meta.data[,id] <- singler_anno$labels
+        seu@meta.data[,id] <- singler_anno$pruned.labels
       }
     }
   }
 } 
+DefaultAssay(seu) <- 'integrated'
+colnames(seu@meta.data) <- gsub("X$", "", colnames(seu@meta.data))
 
-id_map <- unique(seu$bp.fine.cluster) %>%
+# Makes annotations simpler (e.g. "B Cells (B.Fo) -> B.Fo)
+id_map <- unique(seu$immgen.fine.cluster) %>%
   gsub("^.*\\(", "", .) %>%
   gsub("\\)", "", .) %>%
   gsub("(^.*?\\..*)\\..*", "\\1", .) %>%
-  setNames(., unique(seu$bp.fine.cluster))
-seu$bp.fine.cluster2 <- id_map[seu$bp.fine.cluster]
-seu$bp.fine.cell2 <- id_map[seu$bp.fine.cell]
+  setNames(., unique(seu$immgen.fine.cluster))
+seu$immgen.fine.cluster.simple <- id_map[seu$immgen.fine.cluster]
+seu$immgen.fine.cell.simple <- id_map[seu$immgen.fine.cell]
 
+# Relabel clusters based on manually curated markers
+relabel_map <- unique(seu@meta.data[,c('immgen.fine.cluster.simple', 'seurat_clusters')]) %>%
+  as.data.frame %>% 
+  tibble::remove_rownames(.) %>% 
+  tibble::column_to_rownames(., 'seurat_clusters') %>%
+  rename_with(., ~"celltype")
+rename_key <- c('8'='T.Tregs.Klf2+', '10'='T.Tregs.Klf2+', '19'='T.Tregs', 
+                '20'='Unknown', '7'='T.4MEM', '17'='T.8MEM')
+relabel_map[names(rename_key), 'celltype'] <- rename_key
+seu$`immgen.fine.cluster.simple` <- relabel_map[as.character(seu$seurat_clusters),'celltype']
 if(visualize){
   dpcl <- DimPlot(seu, label = TRUE, repel = TRUE, reduction = "umap",
-                  group.by="seurat_clusters2", pt.size=0.5, shuffle=TRUE)
+                  group.by="seurat_clusters", pt.size=0.5, shuffle=TRUE)
   dp1 <- DimPlot(seu, label = TRUE, repel = TRUE, reduction = "umap",
-                 group.by="bp.main.cell", pt.size=0.5, shuffle=TRUE)
+                 group.by="immgen.main.cell", pt.size=0.5, shuffle=TRUE)
   dp1b <- DimPlot(seu, label = TRUE, repel = TRUE, reduction = "umap",
-                  group.by="bp.main.cluster", pt.size=0.5, shuffle=TRUE)
+                  group.by="immgen.main.cluster", pt.size=0.5, shuffle=TRUE)
   dp1c <- DimPlot(seu, label = TRUE, repel = TRUE, reduction = "umap",
-                  group.by="bp.fine.cluster2", pt.size=0.5, shuffle=TRUE)
+                  group.by="immgen.fine.cluster.simple", pt.size=0.5, shuffle=TRUE)
   dp1d <- DimPlot(seu, label = TRUE, repel = TRUE, reduction = "umap",
-                  group.by="bp.fine.cell2", pt.size=0.5, shuffle=TRUE)
+                  group.by="immgen.fine.cell.simple", pt.size=0.5, shuffle=TRUE)
   dp2 <- DimPlot(seu, label = TRUE, repel = TRUE, reduction = "umap",
                  group.by="orig.ident", pt.size=0.5, shuffle=TRUE)
+  fp <- FeaturePlot(seu, features=c('nCount_RNA', 'G2M.Score', 'percent.mt'), 
+                    pt.size=0.5, order=T, ncol=3)
+  pdf(file.path("~/xfer", "dimplot_immgen_anno.pdf"), width=15)
+  plot_grid(dpcl, dp1c, ncol=2)
+  plot_grid(dp2, dp1d, ncol=2)
+  fp
+  dev.off()
   pdf(file.path(outdir, "annotation", "dimplot_immgen_anno.pdf"), width=15)
   plot_grid(dpcl, dp1, ncol=2)
   plot_grid(dpcl, dp1b, ncol=2)
   plot_grid(dpcl, dp1c, ncol=2)
   plot_grid(dpcl, dp1d, ncol=2)
-  plot_grid(dpcl, dp2, ncol=2)
+  plot_grid(dp1c, dp2, ncol=2)
   dev.off()
 }
 
 
-saveRDS(seu, file=file.path(datadir, "seurat_obj", "seu_anno.rds"))
+saveRDS(seu, file=file.path(datadir, "seurat_obj", "4_seu_anno.rds"))
+
+#################################################
+#### 1.c Subsetting for just T- and NK-cells ####
+if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "4_seu_anno.rds"))
+dir.create(file.path(outdir, "markers"), showWarnings = F)
+
+# Relabel cell types according Sara's annotations
+manual_anno <- c('0'='Treg', '1'='Macrophages (Mertk-)','2'='Treg','3'='Treg (Cxcl10+)',
+                 '4'='Treg', '5'='Macrophages (Mertk+)', '6'='Macrophages (Mertk-)',
+                 '7'='Naive CD4 Th2+','8'='Treg (8)','9'='Treg','10'='Treg (10)',
+                 '11'='DC (Ccr7+)', '12'='Treg','13'='Monocyte Derived Macrophages',
+                 '14'='CD8 Effector', '15'='Treg (15)','16'='Macrophages (Mertk+)',
+                 '17'='CD8 Naive', '18'='Treg (18)', '19'='Treg (19)','20'='Macrophages',
+                 '21'='Bcells', '22'='Eosinophils', '23'='NK')
+seu$anno <- manual_anno[seu$seurat_clusters]
+saveRDS(seu, file = file.path(datadir, "seurat_obj", "5_seu_manual_anno.rds"))
+
+# pype_from_seurat <- function (seurat) {
+#   seurat_status <- requireNamespace("Seurat", quietly = TRUE) && 
+#     requireNamespace("SeuratObject", quietly = TRUE)
+#   if (!seurat_status) 
+#     stop("Install Seurat to use this function.")
+#   stopifnot(inherits(seurat, "Seurat"))
+#   all_graphs <- names(seurat@graphs)
+#   if (is.null(all_graphs)) {
+#     seurat <- Seurat::FindNeighbors(seurat)
+#     all_graphs <- names(seurat@graphs)
+#   }
+#   snn_graphs <- all_graphs[grepl("_snn$", all_graphs)]
+#   graph_choices <- paste(c("integrated", "WNN", "SCT", "RNA"), "snn", sep = "_")
+#   graph_choice <- graph_choices[graph_choices %in% snn_graphs][1]
+#   if ("umap" %in% names(seurat@reductions)) {
+#     dimension_names <- c("UMAP_1", "UMAP_2")
+#   } else if ("tsne" %in% names(seurat@reductions)) {
+#     dimension_names <- c("tSNE_1", "tSNE_2")
+#   } else if (any(grepl("umap|tsne", names(seurat@reductions)))) {
+#     use <- names(seurat@reductions)[grepl("umap|tsne|UMAP|TSNE", 
+#                                           names(seurat@reductions))]
+#     use <- use[1]
+#     dimension_names <- colnames(seurat@reductions[[use]]@cell.embeddings)
+#   } else {
+#     stop("Neither UMAP nor tSNE found.")
+#   }
+#   list(raw = SeuratObject::GetAssayData(seurat, "counts"), 
+#        neighbors = methods::as(seurat@graphs[[graph_choice]], 
+#                                "dgCMatrix") > 0.1, embed = Seurat::FetchData(seurat, 
+#                                                                              dimension_names), totalUMI = seurat$nCount_RNA)
+# }
+# 
+# pype <- seu %>%
+#   pype_from_seurat %>%
+#   rule("B",           "Ms4a1",   ">", 1)                    %>%
+#   rule("CD14+ Mono",  "Cd14",    ">", 1)                    %>%
+#   rule("CD14+ Mono",  "Lyz1",     ">", 20)                   %>%
+#   rule("DC",          "Fcer1a",  ">", 1)                    %>%
+#   rule("Platelet",    "Ppbp",    ">", 30)                   %>%
+#   rule("T",           "Cd3e",    ">", 3.5)                  %>% 
+#   rule("CD8+ T",      "Cd8a",    ">", .8,  parent="T")      %>%
+#   rule("CD4+ T",      "Cd4",     ">", .05, parent="T")      %>%
+#   # rule("Treg",        "Cxcr3",     ">", 2, parent="T")      %>%
+#   rule("Treg",        "Foxp3",     ">", 2, parent="T")      %>%
+#   rule("Treg_Klf2+",   "Klf2",     ">", 2, parent="Treg")      %>%
+#   rule("Naive CD4+",  "Ccr7",    ">", 1.5, parent="CD4+ T") 
+# #%>%
+#   #rule("Memory CD4+",  "S100a4", ">", 13,  parent="CD4+ T")
+# 
+# pdf("~/xfer/test.pdf")
+# plot_classes(pype)+ggtitle("PBMCs annotated with cellpypes")
+# dev.off()
+
+subset_celltypes <- c('Treg', 'Treg (Cxcl10+)', 'Treg (8)', 'Treg (10)', 
+                      'Treg (15)', 'Treg (19)', 'Treg (18)', 'CD8 Effector',
+                      'CD8 Naive','Naive CD4 Th2+')
+Idents(seu) <- 'anno'
+seu_sub <- subset(seu, idents=subset_celltypes)
+DefaultAssay(seu_sub) <- 'integrated'
+
+#Confirm #PC's determined explain > 95% of variance
+seu_sub <- RunPCA(seu_sub, npcs=500, verbose = FALSE)
+var <- seu_sub@reductions$pca@stdev^2
+dvar <- abs(diff(var))
+PCNum <- c(min(which(cumsum(dvar)/sum(dvar) >= 0.99)) + 1,
+           min(which(cumsum(var)/sum(var) >= 0.8)))
+PCNum <- 213 #80% of variance
+
+# Visualizing and selecting PCs
+DefaultAssay(seu_sub) <- 'integrated'
+seu_sub <- RunUMAP(object = seu_sub, dims = 1:PCNum[2])
+
+# pdf("~/xfer/test_3.2.pdf", width = 12, height = 10)
+# fs <- c('Cd3e', 'Itgax', 'Itgam', 'Foxp3', 'Cd8a', 'Cd4', 'Cd19', 'Ikzf2',
+#         'Adgre1', 'H2-Ab1', 'Siglecf', 'Siglech', 'Ly6g', 'Mpo', 'Adgre4',
+#         'Apoe', 'Cd36', 'Csf1r', 'Cx3cr1', 'Ccr2', 'Mertk', 'Klf2', 'Irf4', 'Il1b',
+#         'Ly6c', 'Marco', 'Pparg', 'Mrc1', 'Cd2', 'Siglec1', 'C1q', 'Mafb', 'Arg1', 'Mgl2', 'Trem2',
+#         'Ccr2', 'Ly6c2', 'F13q1', 'Cx3cr1', 'Nr4a1', 'Pglyrp1', 'Eno3', 'Ace')
+# fs <- c('Cd3e', 'Cd8a', 'Cd4', 'Cxcr3', 'Klf2', 'Cxcl10', 'Foxp3')
+# DefaultAssay(seu_sub) <- 'RNA'
+# FeaturePlot(seu_sub, features=fs, pt.size=0.5, order=T, ncol=3, slot='counts')
+# DefaultAssay(seu_sub) <- 'integrated'
+# DimPlot(seu_sub, label=TRUE, repel=TRUE, reduction='umap',
+#         split.by='orig.ident', pt.size=0.5, group.by='seurat_clusters', ncol=3)
+# DimPlot(seu_sub, label=TRUE, repel=TRUE, reduction='umap',
+#         split.by='orig.ident', pt.size=0.5, group.by='immgen.fine.cluster.simple', ncol=3)
+# dev.off()
+
+seu <- seu_sub
+saveRDS(seu, file = file.path(datadir, "seurat_obj", "5_seu_anno_tcells.rds"))
+
+
 
 #########################################################
 #### 1.c Finding all markers for each seurat-cluster ####
-if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "seu_anno.rds"))
+if(!exists("seu")) seu <- readRDS(file = file.path(datadir, "seurat_obj", "5_seu_anno_tcells.rds"))
+if(!exists("seu")) seu <- readRDS(file = file.path(datadir, "seurat_obj", "5_seu_manual_anno.rds"))
 dir.create(file.path(outdir, "markers"), showWarnings = F)
 
-markers_f <- file.path(outdir, "annotation", "seurat_markers.rds")
+markers_f <- file.path(outdir, "annotation", "rds", "seurat_markers_allcells.rds")
 if(!file.exists(markers_f)){
-  Idents(seu) <- 'seurat_clusters2'
-  DefaultAssay(seu) <- 'RNA'
-  markers <- FindAllMarkers(object = seu, only.pos = FALSE, 
-                            min.pct = 0.01, thresh.use = 0.01, 
-                            test.use='wilcox', slot='data')
-  markers %>%
-    rename(., avg_logFC=avg_log2FC) %>% 
-    write.table(., sep=",", file=file.path(outdir, "markers", "markers.csv"),
-                quote=F, row.names = F, col.names = T)
+  ## Cluster-level markers
+  Idents(seu) <- 'anno'
+  DefaultAssay(seu) <- 'integrated'
+  clusters <- levels(Idents(seu))
+  sample_pairs <- combn(unique(seu$orig.ident), m=2)
+  cl_marker <- lapply(setNames(clusters, clusters), function(cluster){
+    print(paste0("Finding DEGs for : ", cluster, "..."))
+    cluster_markers_f <- gsub(".rds$", paste0("_", cluster, ".rds"), markers_f)
+    if(!file.exists(cluster_markers_f)){
+      cl_markers <- apply(sample_pairs, 2, function(ids){
+        idx <- apply(sample_pairs, 2, function(i) all(ids == i)) %>% which
+        print(paste0("DEG for: ", cluster, " (", idx, "/", ncol(sample_pairs), ")"))
+        n_ident_1 <- sum(seu$orig.ident==ids[1] & as.character(Idents(seu))==cluster, na.rm=T)
+        n_ident_2 <- sum(seu$orig.ident==ids[2] & as.character(Idents(seu))==cluster, na.rm=T)
+        
+        markers <- tryCatch({
+          FindMarkers(seu, slot = "data",test.use = "wilcox", 
+                      ident.1=ids[1], ident.2=ids[2], 
+                      group.by='orig.ident', subset.ident=cluster) %>%
+            mutate(n.ident_1 = n_ident_1,
+                   n.ident_2 = n_ident_2,
+                   ident_1=ids[1],
+                   ident_2=ids[2],
+                   cluster=cluster) %>%
+            tibble::rownames_to_column(., "gene") %>%
+            mutate(ensemble=sym2ens_ids[gene]) %>% 
+            mutate(biotype=ens2biotype_ids[ensemble])
+        }, error=function(e){
+          c(rep(NA, 6), n_ident_1, n_ident_2,  ids[1], 
+            ids[2], cluster, rep(NA,2)) %>%
+            t %>% 
+            as.data.frame %>%
+            setNames(., c('gene', 'p_val', 'avg_log2FC', 'pct.1', 'pct.2',
+                          'p_val_adj', 'n.ident_1', 'n.ident_2', 'ident_1',
+                          'ident_2', 'cluster', 'ensemble', 'biotype'))
+        })
+        return(markers)
+      })
+      names(cl_markers) <- apply(sample_pairs,2,paste, collapse="_")
+      saveRDS(cl_markers, file=cluster_markers_f)
+    } else {
+      cl_markers <- readRDS(cluster_markers_f)
+    }
+    return(cl_markers)
+  })
+  
+  ## Celltype-level markers between samples
+  Idents(seu) <- 'immgen.fine.cluster.simple'
+  DefaultAssay(seu) <- 'integrated'
+  celltypes <- levels(Idents(seu))
+  ct_marker <- lapply(setNames(celltypes, celltypes), function(celltype){
+    print(paste0("Finding DEGs for : ", celltype, "..."))
+    celltype_markers_f <- gsub(".rds$", paste0("_", celltype, ".rds"), markers_f)
+    if(!file.exists(celltype_markers_f)){
+      ct_markers <- apply(sample_pairs, 2, function(ids){
+        idx <- apply(sample_pairs, 2, function(i) all(ids == i)) %>% which
+        print(paste0("DEG for: ", celltype, " (", idx, "/", ncol(sample_pairs), ")"))
+        n_ident_1 <- sum(seu$orig.ident==ids[1] & as.character(Idents(seu))==celltype, na.rm=T)
+        n_ident_2 <- sum(seu$orig.ident==ids[2] & as.character(Idents(seu))==celltype, na.rm=T)
+        
+        markers <- tryCatch({
+          FindMarkers(seu, slot = "data",test.use = "wilcox", 
+                      ident.1=ids[1], ident.2=ids[2], 
+                      group.by='orig.ident', subset.ident=celltype) %>%
+            mutate(n.ident_1 = n_ident_1,
+                   n.ident_2 = n_ident_2,
+                   ident_1=ids[1],
+                   ident_2=ids[2],
+                   celltype=celltype) %>%
+            tibble::rownames_to_column(., "gene") %>%
+            mutate(ensemble=sym2ens_ids[gene]) %>% 
+            mutate(biotype=ens2biotype_ids[ensemble])
+        }, error=function(e){
+          c(rep(NA, 6), n_ident_1, n_ident_2,  ids[1], 
+            ids[2], celltype, rep(NA,2)) %>%
+            t %>% 
+            as.data.frame %>%
+            setNames(., c('gene', 'p_val', 'avg_log2FC', 'pct.1', 'pct.2',
+                          'p_val_adj', 'n.ident_1', 'n.ident_2', 'ident_1',
+                          'ident_2', 'celltype', 'ensemble', 'biotype'))
+        })
+        return(markers)
+      })
+      names(ct_markers) <- apply(sample_pairs,2,paste, collapse="_")
+      saveRDS(ct_markers, file=celltype_markers_f)
+    } else {
+      ct_markers <- readRDS(celltype_markers_f)
+    }
+    return(ct_markers)
+  })
+  
+  markers <- list("cluster"=cl_marker,
+                  "celltype"=ct_marker)
   saveRDS(markers, file=markers_f)
 } else {
   markers <- readRDS(markers_f)
 }
 
-markers_cl <- split(markers, markers$cluster)
-x <- lapply(anno_geneset, function(anno_gs){
-  lapply(names(anno_gs), function(dir){
-    anno_dir <- str_to_title(anno_gs[[dir]])
-    lfc <- sapply(markers_cl, function(mcl){
-      if(length(anno_dir)==0) anno_dir <- ''
-      setNames(mcl[anno_dir,]$avg_log2FC,
-               anno_dir)
-    }) %>%
-      round(., 2)
-    if(!is.matrix(lfc)) lfc <-  matrix(lfc, nrow=1, dimnames=list(anno_dir, names(markers_cl)))
-    lfc[is.na(lfc)] <- 0
-    return(lfc[,order(colSums(lfc))])
+# Concatenate markers
+markers_dts <- lapply(names(markers), function(grp_type){
+  marker_j <- markers[[grp_type]]
+  merge_cols <- c('gene', grp_type, 'ensemble', 'biotype')
+  
+  lapply(marker_j, function(marker_i){
+    # Remove ident_1/2 column and make non-merge column names unique
+    marker_i <- lapply(seq_along(marker_i), function(midx){
+      mi <- marker_i[[midx]]
+      mi %>% 
+        mutate(ids=paste0(ident_1, "-", ident_2),
+               avg_log2FC=round(as.numeric(as.character(avg_log2FC)), 3)) %>%
+        select(-c(ident_1, ident_2)) %>%
+        relocate(c(merge_cols, 'ids')) %>%
+        rename_with(.data =., 
+                    .cols = -merge_cols,
+                    ~paste0(., ".", midx))
+    })
+    
+    marker_i %>% 
+      purrr::reduce(left_join, by=merge_cols)
   })
 })
-markers_cl <- split(markers, f=markers$cluster)
+names(markers_dts) <- names(markers)
+markers_dts_unl <- unlist(markers_dts, recursive=F)
 
-marker_id <- list("DC"=c("Cst3"),
-                  "Mast cells"=c("Gata2", "Ms4a2", "Tpsab1", "Tpsb2"),
-                  "Neutrophil"=c("Cpd", "Csf3r", "S100a8", "S100a9"),
-                  "NK"=c("Klrd1", "Nkg7", "Cd3e"),
-                  "Plasma cell"=c("Ighg2", "Ighg1", "Jchain"),
-                  "TAM"=c("Cd68", "Fcgr3", "Lyz", "Cd14"))
-
-marker_lbl <- c("16"="Mast cells",
-                "17"="DC",
-                "1"="Neutrophil",
-                "15"="NK",
-                "2"="Plasma cell",
-                "13"="TAM",
-                "10"="TAM")
-seu$marker_labels <- marker_lbl[seu$seurat_clusters2]
+# Write out the DEGs per celltype/cluster and merged each sample-sample comparison
+dir.create(file.path(outdir, "annotation", "tsv"), showWarnings = F)
+lapply(names(markers_dts_unl), function(m_id){
+  m_id_san <- gsub("[^[:alnum:]. ]", "", m_id)
+  write.table(markers_dts_unl[[m_id]], 
+              file=file.path(outdir, "annotation", "tsv", paste0(m_id_san, ".tcell.tsv")),
+              sep="\t", col.names = T, row.names = F, quote = F)
+})
 
 
-if(visualize){
-  dpcl <- DimPlot(seu, label = TRUE, repel = TRUE, reduction = "umap",
-                  group.by="seurat_clusters2", pt.size=0.5, shuffle=TRUE)
-  dp1 <- DimPlot(seu, label = TRUE, repel = TRUE, reduction = "umap",
-                 group.by="bp.fine.cell2", pt.size=0.5, shuffle=TRUE)
-  dp2 <- DimPlot(seu, label = TRUE, repel = TRUE, reduction = "umap",
-                 group.by="marker_labels", pt.size=0.5, shuffle=TRUE)
+####################################################
+#### 2.tmp Subset B-cells and identify identity ####
+dir.create(file.path(outdir, "markers"), showWarnings = F)
+if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "4_seu_anno.rds"))
+immgen_label <- setNames('immgen.label.main', "main")
+marker_file <- paste0("markers_per_celltype.", names(immgen_label), ".rds")
+
+data("pbmc3k")
+pbmc3k <- preprocessAzimuth(pbmc3k)
+# Annotate
+seu <- runAzimuth(ref=pbmc3k, query=seu)
+
+runSingleR <- function(seu, dataset='blueprint',
+                       dataset_dir='/cluster/projects/mcgahalab/ref/scrna/scRNAseq_datasets',
+                       overwrite=FALSE){
   
-  pdf(file.path(outdir, "annotation", "dimplot_manual_anno.pdf"), width=15)
-  plot_grid(dpcl, dp1, ncol=2)
-  plot_grid(dpcl, dp2, ncol=2)
-  FeaturePlot(seu, features = unlist(marker_id))
-  dev.off()
+  DefaultAssay(seu) <- 'RNA'
+  if(all(seu@assays$RNA@data == seu@assays$RNA@counts)){
+    print("logNormalizing data...")
+    seu <- NormalizeData(seu,
+                         normalization.method = "LogNormalize")
+  }
+  
+  # Read in the reference datasets  
+  bed.se <- switch(dataset,
+                   blueprint='BlueprintEncodeData.rds',
+                   immgen='immgen.rds',
+                   mair='MairPBMCData.rds',
+                   monaco='Monaco.rds')
+  bed.se <- readRDS(file.path(dataset_dir, bed.se))
+  if(dataset=='monaco') rownames(bed.se) <- stringr::str_to_title(rownames(bed.se))
+  
+  # Annotate cell/cluster level using the fine/main levels
+  for(lbl in c('label.fine', 'label.main')){
+    for(clus in c(TRUE, FALSE)){
+      rds_file <- paste0("celldex_", 
+                         dataset, ".",
+                         gsub("label.", "", lbl), ".", 
+                         if(clus) 'cluster' else 'cell', 
+                         ".rds")
+      id <- gsub("^.*?\\.(.*).rds", paste0(dataset, ".\\1"), rds_file)
+      print(paste0("> ", id, "..."))
+      
+      singler_anno <- SingleR(test=GetAssayData(seu, assay = "RNA", slot = "data"), 
+                              ref=bed.se, 
+                              assay.type.test=1, labels=bed.se[[lbl]],
+                              de.method="wilcox", genes='sd', de.n=50,
+                              clusters=if(clus) seu$seurat_clusters else NULL)
+  
+      
+      if(clus){
+        cluster_ids <- setNames(singler_anno$pruned.labels, 
+                                as.character(rownames(singler_anno)))
+        seu@meta.data[,id] <- cluster_ids[as.character(seu$seurat_clusters)]
+      } else {
+        seu@meta.data[,id] <- singler_anno$pruned.labels
+      }
+    }
+  }
+  return(seu)
 }
 
-saveRDS(seu, file=file.path(datadir, "seurat_obj", "seu_anno.rds"))
+getNumOfPcs <- function(seu, min_var=0.9){
+  sdev <- seu@reductions$pca@stdev
+  percent_var <- round(sdev^2/sum(sdev^2),5)
+  max_pcs <- which(cumsum(percent_var) <= min_var) %>% max
+  return(max_pcs)
+}
 
-###################################################
-#### 2.a Split Tumor and LN; Visualize samples ####
-dir.create(file.path(outdir, "dimplot"), showWarnings = F)
 
-if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "seu_anno.rds"))
+Idents(seu) <- 'seurat_clusters'
+seu_subset_raw <- subset(seu, idents=c('1', '5', '6', '16', '13', '3'))
+seu_subset <- seu_subset_raw
+seu_subset$old_clusters <- seu$seurat_clusters
+DefaultAssay(seu_subset) <- 'integrated'
+seu_subset <- RunPCA(seu_subset, npcs = 200, verbose = FALSE)
+pcs <- getNumOfPcs(seu_subset, 0.8)
+seu_subset <- FindNeighbors(object = seu_subset, dims = 1:(pcs+1))
+seu_subset <- FindClusters(object = seu_subset, resolution = 1.8)
+seu_subset <- RunUMAP(object = seu_subset, dims = 1:(pcs+1))
+seu_subset <- runSingleR(seu_subset, dataset = 'monaco')
+
+noise <- with(seu_subset@meta.data, table(seurat_clusters, monaco.fine.cell)) %>% 
+  colSums
+noise_idx <- which(seu_subset$monaco.fine.cell %in% names(which(noise < 50)))
+seu_subset@meta.data[noise_idx,'monaco.fine.cell'] <- NA
+seu_subset_raw$monaco.fine.cell <- seu_subset$monaco.fine.cell
+seu_subset_raw$monaco.fine.cluster <- seu_subset$monaco.fine.cluster
+seu_subset_raw$new_cluster <- seu_subset$seurat_clusters
+
+pdf("~/xfer/sara_bcells.pdf", width = 17)
+dimplot_fun <- function(seu, group){
+  DimPlot(seu, reduction = "umap", group.by = group, 
+          label = TRUE, label.size = 3,
+          repel = TRUE, combine=T)
+}
+dp1 <- dimplot_fun(seu_subset_raw, 'seurat_clusters')
+dp2 <- dimplot_fun(seu_subset_raw, 'immgen.fine.cell.simple')
+dp3 <- dimplot_fun(seu_subset_raw, 'immgen.fine.cluster.simple')
+plot_grid(dp1, dp2, dp3, ncol=3)
+
+dp1 <- dimplot_fun(seu_subset, 'old_clusters')
+dp2 <- dimplot_fun(seu_subset, 'seurat_clusters')
+dp3 <- dimplot_fun(seu_subset, 'immgen.fine.cell.simple')
+plot_grid(dp1, dp2, dp3, ncol=3)
+
+
+dp1 <- dimplot_fun(seu_subset, 'immgen.fine.cell.simple')
+dp2 <- dimplot_fun(seu_subset, 'monaco.fine.cell')
+dp3 <- dimplot_fun(seu_subset, 'monaco.fine.cluster')
+plot_grid(dp1, dp2, dp3, ncol=3)
+
+dp1 <- dimplot_fun(seu_subset_raw, 'new_cluster')
+dp2 <- dimplot_fun(seu_subset_raw, 'monaco.fine.cell')
+dp3 <- dimplot_fun(seu_subset_raw, 'monaco.fine.cluster')
+plot_grid(dp1, dp2, dp3, ncol=3)
+dev.off()
+
+
+##############################################################
+#### 1.d Relabelling clusters based on Sara's annotations ####
 dir.create(file.path(outdir, "markers"), showWarnings = F)
+if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "4_seu_anno.rds"))
+seu$old_clusters <- seu$seurat_clusters
+map_key <- as.character(levels(seu$seurat_clusters))
+map_key <- setNames(map_key, map_key)
+map_key[as.character(c(2,9,0,12,4))] <- '2'
+map_key[as.character(c(5,16,1,6))] <- '1'
+
+new_clusters <- factor(as.integer(map_key[seu$seurat_clusters]))
+levels(new_clusters) <- c(0:length(levels(new_clusters)))
+seu$seurat_clusters <- new_clusters
+
+pdf("~/xfer/sara_new_cluster.pdf")
+DimPlot(seu, reduction = "umap", group.by = 'seurat_clusters', 
+        label = TRUE, label.size = 3,
+        repel = TRUE, combine=T)
+dev.off()
+saveRDS(seu, file=file.path(datadir, "seurat_obj", "5_seu_anno_recluster.rds"))
+
+##################################################
+#### 1.e Differential markers of the clusters ####
+if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "5_seu_anno_recluster.rds"))
+dir.create(file.path(outdir, "markers"), showWarnings = F)
+
+markers_f <- file.path(outdir, "annotation", "rds", "seurat_markers_allcells.reanno.rds")
+if(!file.exists(markers_f)){
+  ## Cluster-level markers
+  Idents(seu) <- 'seurat_clusters'
+  DefaultAssay(seu) <- 'integrated'
+  clusters <- levels(Idents(seu))
+  sample_pairs <- combn(unique(seu$orig.ident), m=2)
+  cl_marker <- lapply(setNames(clusters, clusters), function(cluster){
+    print(paste0("Finding DEGs for : ", cluster, "..."))
+    cluster_markers_f <- gsub(".rds$", paste0("_", cluster, ".rds"), markers_f)
+    if(!file.exists(cluster_markers_f)){
+      cl_markers <- apply(sample_pairs, 2, function(ids){
+        idx <- apply(sample_pairs, 2, function(i) all(ids == i)) %>% which
+        print(paste0("DEG for: ", cluster, " (", idx, "/", ncol(sample_pairs), ")"))
+        n_ident_1 <- sum(seu$orig.ident==ids[1] & as.character(Idents(seu))==cluster, na.rm=T)
+        n_ident_2 <- sum(seu$orig.ident==ids[2] & as.character(Idents(seu))==cluster, na.rm=T)
+        
+        markers <- tryCatch({
+          FindMarkers(seu, slot = "data",test.use = "wilcox", 
+                      ident.1=ids[1], ident.2=ids[2], 
+                      group.by='orig.ident', subset.ident=cluster) %>%
+            mutate(n.ident_1 = n_ident_1,
+                   n.ident_2 = n_ident_2,
+                   ident_1=ids[1],
+                   ident_2=ids[2],
+                   cluster=cluster) %>%
+            tibble::rownames_to_column(., "gene") %>%
+            mutate(ensemble=sym2ens_ids[gene]) %>% 
+            mutate(biotype=ens2biotype_ids[ensemble])
+        }, error=function(e){
+          c(rep(NA, 6), n_ident_1, n_ident_2,  ids[1], 
+            ids[2], cluster, rep(NA,2)) %>%
+            t %>% 
+            as.data.frame %>%
+            setNames(., c('gene', 'p_val', 'avg_log2FC', 'pct.1', 'pct.2',
+                          'p_val_adj', 'n.ident_1', 'n.ident_2', 'ident_1',
+                          'ident_2', 'cluster', 'ensemble', 'biotype'))
+        })
+        return(markers)
+      })
+      names(cl_markers) <- apply(sample_pairs,2,paste, collapse="_")
+      saveRDS(cl_markers, file=cluster_markers_f)
+    } else {
+      cl_markers <- readRDS(cluster_markers_f)
+    }
+    return(cl_markers)
+  })
+  
+  ## Celltype-level markers between samples
+  Idents(seu) <- 'immgen.fine.cluster.simple'
+  DefaultAssay(seu) <- 'integrated'
+  celltypes <- levels(Idents(seu))
+  ct_marker <- lapply(setNames(celltypes, celltypes), function(celltype){
+    print(paste0("Finding DEGs for : ", celltype, "..."))
+    celltype_markers_f <- gsub(".rds$", paste0("_", celltype, ".rds"), markers_f)
+    if(!file.exists(celltype_markers_f)){
+      ct_markers <- apply(sample_pairs, 2, function(ids){
+        idx <- apply(sample_pairs, 2, function(i) all(ids == i)) %>% which
+        print(paste0("DEG for: ", celltype, " (", idx, "/", ncol(sample_pairs), ")"))
+        n_ident_1 <- sum(seu$orig.ident==ids[1] & as.character(Idents(seu))==celltype, na.rm=T)
+        n_ident_2 <- sum(seu$orig.ident==ids[2] & as.character(Idents(seu))==celltype, na.rm=T)
+        
+        markers <- tryCatch({
+          FindMarkers(seu, slot = "data",test.use = "wilcox", 
+                      ident.1=ids[1], ident.2=ids[2], 
+                      group.by='orig.ident', subset.ident=celltype) %>%
+            mutate(n.ident_1 = n_ident_1,
+                   n.ident_2 = n_ident_2,
+                   ident_1=ids[1],
+                   ident_2=ids[2],
+                   celltype=celltype) %>%
+            tibble::rownames_to_column(., "gene") %>%
+            mutate(ensemble=sym2ens_ids[gene]) %>% 
+            mutate(biotype=ens2biotype_ids[ensemble])
+        }, error=function(e){
+          c(rep(NA, 6), n_ident_1, n_ident_2,  ids[1], 
+            ids[2], celltype, rep(NA,2)) %>%
+            t %>% 
+            as.data.frame %>%
+            setNames(., c('gene', 'p_val', 'avg_log2FC', 'pct.1', 'pct.2',
+                          'p_val_adj', 'n.ident_1', 'n.ident_2', 'ident_1',
+                          'ident_2', 'celltype', 'ensemble', 'biotype'))
+        })
+        return(markers)
+      })
+      names(ct_markers) <- apply(sample_pairs,2,paste, collapse="_")
+      saveRDS(ct_markers, file=celltype_markers_f)
+    } else {
+      ct_markers <- readRDS(celltype_markers_f)
+    }
+    return(ct_markers)
+  })
+  
+  markers <- list("cluster"=cl_marker,
+                  "celltype"=ct_marker)
+  saveRDS(markers, file=markers_f)
+} else {
+  markers <- readRDS(markers_f)
+}
+
+# Concatenate markers
+markers_dts <- lapply(names(markers), function(grp_type){
+  marker_j <- markers[[grp_type]]
+  merge_cols <- c('gene', grp_type, 'ensemble', 'biotype')
+  
+  lapply(marker_j, function(marker_i){
+    # Remove ident_1/2 column and make non-merge column names unique
+    marker_i <- lapply(seq_along(marker_i), function(midx){
+      mi <- marker_i[[midx]]
+      mi %>% 
+        mutate(ids=paste0(ident_1, "-", ident_2),
+               avg_log2FC=round(as.numeric(as.character(avg_log2FC)), 3)) %>%
+        select(-c(ident_1, ident_2)) %>%
+        relocate(c(merge_cols, 'ids')) %>%
+        rename_with(.data =., 
+                    .cols = -merge_cols,
+                    ~paste0(., ".", midx))
+    })
+    
+    marker_i %>% 
+      purrr::reduce(left_join, by=merge_cols)
+  })
+})
+names(markers_dts) <- names(markers)
+markers_dts_unl <- unlist(markers_dts, recursive=F)
+
+# Write out the DEGs per celltype/cluster and merged each sample-sample comparison
+dir.create(file.path(outdir, "annotation", "reanno_tsv"), showWarnings = F)
+lapply(names(markers_dts_unl), function(m_id){
+  m_id_san <- gsub("[^[:alnum:]. ]", "", m_id)
+  write.table(markers_dts_unl[[m_id]], 
+              file=file.path(outdir, "annotation", "reanno_tsv", paste0(m_id_san, ".tcell.tsv")),
+              sep="\t", col.names = T, row.names = F, quote = F)
+})
+
+############################################################
+#### 1.f Proportion of samples per cluster and celltype ####
+if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "5_seu_anno_recluster.rds"))
+dir.create(file.path(outdir, "markers"), showWarnings = F)
+
+# Absolute sample proportions: proportions of clusters per sample
+abs_prop_sample <- sapply(split(seu$seurat_clusters, seu$old.ident),
+       function(i){
+         table(i)/length(i)
+       })
+
+# Delta sample proportions: proportions of clusters per sample, compared to the baseline
+base_prop_sample <- table(seu$seurat_clusters) / ncol(seu)
+rel_prop_sample <- apply(abs_prop_sample, 2, function(i) i-base_prop_sample)
+
+
+# Absolute proportions: proportions of samples per cluster
+abs_prop_cluster <- sapply(split(seu$old.ident, seu$seurat_clusters),
+                          function(i){
+                            table(factor(i, levels=unique(seu$old.ident)))/length(i)
+                          })
+
+# Delta proportions: proportions of samples compared to the baseline per cluster
+base_prop_cluster <- table(seu$old.ident) / ncol(seu)
+rel_prop_cluster <- apply(abs_prop_cluster, 2, function(i) i-base_prop_cluster)
+prop_list <- list("rel_clus"=rel_prop_cluster,
+                  "abs_clus"=abs_prop_cluster,
+                  "rel_samp"=rel_prop_sample,
+                  "abs_samp"=abs_prop_sample)
+
+dir.create(file.path(outdir, "annotation", "prop"), showWarnings = F)
+lapply(names(prop_list), function(pid){
+  write.table(prop_list[[pid]], file=file.path(outdir, "annotation", "prop", paste0(pid, ".tsv")), 
+              sep="\t", col.names = T, row.names = T, quote = F)
+})
+
+#################################################################
+#### 1.g Trajectory analysis of revised clustered - MONOCLE3 ####
+if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "5_seu_anno_recluster.rds"))
+dir.create(file.path(outdir, "markers"), showWarnings = F)
+
+DefaultAssay(seu) <- 'integrated'
+Idents(seu) <- 'immgen.main.cluster'
+seu_sub <- subset(seu, idents='T cells')
+seu_sub <- seu 
+
+
+pdf("~/xfer/1cg.pdf", width = 9)
+p1 <- plot_cells(cds, color_cells_by = "cluster", show_trajectory_graph = FALSE)
+p2 <- plot_cells(cds, color_cells_by = "partition", show_trajectory_graph = FALSE)
+patchwork::wrap_plots(p1, p2)
+dev.off()
+
+data <- as(as.matrix(seu_sub@assays$RNA@data), 'sparseMatrix')
+data <- as(as.matrix(seu_sub@assays$integrated@scale.data), 'sparseMatrix')
+pd <- seu_sub@meta.data
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+
+cds <- new_cell_data_set(expression_data=data,
+                          cell_metadata  = seu_sub@meta.data,
+                          gene_metadata = fData)
+
+## Step 1: Normalize and pre-process the data
+# cds <- preprocess_cds(cds, num_dim = 50, norm_method='log')
+cds <- preprocess_cds(cds, num_dim = 100, norm_method='size_only', pseudo_count=0)
+pdf("~/xfer/cb.pdf"); plot_pc_variance_explained(cds); dev.off()
+## Step 2: Remove batch effects with cell alignment
+cds <- align_cds(cds, alignment_group = "orig.ident")
+## Step 3: Reduce the dimensions using UMAP
+DefaultAssay(seu_sub) <- 'integrated'
+reducedDims(cds)$UMAP <- seu_sub@reductions$umap@cell.embeddings
+reducedDims(cds)$PCA <- seu_sub@reductions$pca@cell.embeddings[,1:50]
+# cds <- reduce_dimension(cds)
+## Step 4: Cluster the cells
+cds <- cluster_cells(cds)
+## Step 5: Learn a graph
+cds <- learn_graph(cds)
+## Step 6: Order cells
+# cds <- order_cells(cds, reduction_method='UMAP', root_pr_nodes='1')
+pdf("~/xfer/c1i.pdf"); 
+plot_cells(cds, show_trajectory_graph=F)
+plot_cells(cds, color_cells_by="partition", group_cells_by="partition", show_trajectory_graph=F)
+plot_cells(cds, color_cells_by="nCount_RNA", show_trajectory_graph=F)
+plot_cells(cds, color_cells_by="nFeature_RNA", show_trajectory_graph=F)
+plot_cells(cds, color_cells_by="G2M.Score", show_trajectory_graph=F)
+plot_cells(cds, color_cells_by="Phase", show_trajectory_graph=F)
+plot_cells(cds, color_cells_by='seurat_clusters')
+plot_cells(cds, color_cells_by='orig.ident', show_trajectory_graph=F)
+plot_cells(cds, color_cells_by='immgen.fine.cell', show_trajectory_graph=F)
+plot_cells(cds, genes=c("Cd8a", "Marco", "Cd4", "Cd3", "Foxp3", "Ly6c", "Ly6g"),
+           show_trajectory_graph=F)
+dev.off()
+
+marker_clus_res <- top_markers(cds, group_cells_by="cluster", 
+                               reference_cells=1000, cores=8)
+# marker_test_res <- top_markers(cds, group_cells_by="partition", 
+#                                reference_cells=1000, cores=8)
+
+seu_sub$monocle3_clusters <- cds@clusters$UMAP$clusters
+seu_sub$monocle3_partitions <- cds@clusters$UMAP$partitions
+DefaultAssay(seu_sub) <- 'RNA'
+Idents(seu_sub) <- 'monocle3_clusters'
+marker_clus_res <- FindAllMarkers(seu_sub, test.use = "wilcox", slot='data',
+                                  assay='RNA', logfc.threshold = 0.25, 
+                                  max.cells.per.ident=2000)
+top_markers <- marker_clus_res %>%
+  filter(fraction_expressing >= 0.10) %>%
+  group_by(cell_group) %>%
+  top_n(5, pseudo_R2) %>%
+  arrange(., cell_group, marker_test_q_value)
+
+pdf("~/xfer/c2h.pdf"); 
+plot_genes_by_group(cds,
+                    unique(top_markers %>% pull(gene_id)),
+                    group_cells_by="cluster",
+                    ordering_type="maximal_on_diag",
+                    max.size=3)
+dev.off()
+
+
+
+# With regression:
+gene_fits <- fit_models(cds, model_formula_str = "~orig.ident")
+fit_coefs <- coefficient_table(gene_fits)
+emb_time_terms <- fit_coefs %>% filter(term == "embryo.time")
+emb_time_terms <- emb_time_terms %>% mutate(q_value = p.adjust(p_value))
+sig_genes <- emb_time_terms %>% filter (q_value < 0.05) %>% pull(gene_short_name)
+
+# With graph autocorrelation:
+# trace('calculateLW', edit = T, where = asNamespace("monocle3"))
+# change Matrix::rBind() to rbind()
+pr_test_res <- graph_test(cds,  neighbor_graph="principal_graph", 
+                          cores=4, verbose=T)
+pr_deg_ids <- row.names(subset(pr_test_res, q_value < 0.05))
+head(pr_test_res %>% arrange(q_value))
+gene_module_df <- find_gene_modules(cds[pr_deg_ids,], resolution=1e-2)
+
+
+cell_group_df <- tibble::tibble(cell=row.names(colData(cds)), 
+                                cell_group=colData(cds)$old_clusters)
+agg_mat <- aggregate_gene_expression(cds, gene_module_df, cell_group_df)
+row.names(agg_mat) <- stringr::str_c("Module ", row.names(agg_mat))
+pdf("~/xfer/c3a.pdf")
+pheatmap::pheatmap(agg_mat,
+                   scale="column", clustering_method="ward.D2")
+
+plot_cells(cds, color_cells_by='seurat_clusters', label_cell_groups=TRUE)
+
+plot_cells(cds,
+           genes=gene_module_df %>% filter(module %in% c(46, 14, 35, 22)),
+           label_cell_groups=TRUE,
+           show_trajectory_graph=TRUE)
+dev.off()
+
+#x <- list("cds"=cds, "pr_test_res"=pr_test_res)
+saveRDS(x, file="cds_pr.seuUMAP.rds")
+
+##################################################################
+#### 1.g Trajectory analysis of revised clustered - SLINGSHOT ####
+if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "5_seu_anno_recluster.rds"))
+dir.create(file.path(outdir, "markers"), showWarnings = F)
+
+DefaultAssay(seu) <- 'integrated'
+Idents(seu) <- 'immgen.main.cluster'
+seu_sub <- subset(seu, idents='T cells')
+
+seu_i <- SCTransform(seu_sub, assay = 'RNA', new.assay.name = 'SCT2',
+                     vars.to.regress = c('percent.mt', 'CC.Difference'),
+                     conserve.memory = T)
+DefaultAssay(seu_i) <- 'SCT2'
+
+pto.pca <- slingshot(Embeddings(seu_i, "pca")[,1:40], 
+                     clusterLabels = seu_sub$seurat_clusters, 
+                 omega = TRUE, stretch = 0)
+# pto.umap <- slingshot(Embeddings(seu_i, "umap"), clusterLabels = seu_sub$seurat_clusters, 
+#                      omega = TRUE, stretch = 0)
+pto <- pto.pca
+# pto <- pto.umap
+curves <- slingCurves(pto, as.df = TRUE)
+
+# Get top highly variable genes
+top_hvg <- HVFInfo(seu_i) %>% 
+  mutate(., bc = rownames(.)) %>% 
+  arrange(desc(residual_variance)) %>% 
+  top_n(300, residual_variance) %>% 
+  pull(bc)
+# Prepare data for random forest
+dat_use <- t(GetAssayData(seu_i, slot = "data")[top_hvg,])
+dat_use_df <- cbind(slingPseudotime(pto)[,2], dat_use) # Do curve 2, so 2nd columnn
+colnames(dat_use_df)[1] <- "pseudotime"
+dat_use_df <- as.data.frame(dat_use_df[!is.na(dat_use_df[,1]),])
+
+dat_split <- rsample::initial_split(dat_use_df)
+dat_train <- rsample::training(dat_split)
+dat_val <- rsample::testing(dat_split)
+
+model <- parsnip::rand_forest(mtry = 200, trees = 1400, min_n = 15, mode = "regression") %>%
+  set_engine("ranger", importance = "impurity", num.threads = 3) %>%
+  fit(pseudotime ~ ., data = dat_train)
+
+val_results <- dat_val %>% 
+  mutate(estimate = predict(model, .[,-1]) %>% pull()) %>% 
+  select(truth = pseudotime, estimate)
+rsample::metrics(data = val_results, truth, estimate)
+
+var_imp <- sort(model$fit$variable.importance, decreasing = TRUE)
+top_gene_name <- names(var_imp)[1:12]
+
+
+
+hcl_ord <- NULL
+gg_hmps <- lapply(c(1:ncol(assay(pto))), function(lineage_idx){
+  pst.ord <- rownames(assay(pto))[order(assay(pto)[,lineage_idx], na.last = NA)]
+  
+  if(is.null(hcl_ord)){
+    print("hcl_ord is NULL")
+    dat <- GetAssayData(seu_i, slot='scale.data')
+    hcl <- dat[names(var_imp),
+               pst.ord[sample(c(1:length(pst.ord)), size=1000, replace = F)]] %>%
+      dist(., method='euclidean') %>%
+      hclust(.)
+    hcl_ord <<- hcl$order
+  }
+  
+  DoHeatmap(seu_i, features=names(var_imp)[hcl_ord], cells=pst.ord, raster=T)
+})
+pdf("~/xfer/x.pdf", height = 30)
+gg_hmps
+dev.off()
+
+
+
+
+# library(tradeSeq)
+# # fit negative binomial GAM to model relationshipships between gex and pseudotime
+# seu.gam <- fitGAM(counts=seu_sub@assays$RNA@counts, sds=pto.pca)
+# 
+# # test for dynamic expression
+# ATres <- associationTest(sce)
+# 
+# # For visualization, top genes by pseudotime
+# topgenes <- rownames(ATres[order(ATres$pvalue), ])[1:250]
+# pst.ord <- order(sce$slingPseudotime_1, na.last = NA)
+# heatdata <- assays(sce)$counts[topgenes, pst.ord]
+# heatclus <- sce$GMM[pst.ord]
+# 
+# heatmap(log1p(heatdata), Colv = NA,
+#         ColSideColors = brewer.pal(9,"Set1")[heatclus])
+
+
+slingMST2 <- function(x){
+  dfs <- lapply(seq_along(metadata(x)$lineages), function(l){
+    lin <- metadata(x)$lineages[[l]]
+    mst <- metadata(x)$mst
+    centers <- do.call(rbind, igraph::V(mst)$coordinates)
+    rownames(centers) <- igraph::V(mst)$name
+    return(data.frame(centers[lin,,drop=F], Order = seq_along(lin), 
+                      Lineage = l, Cluster = lin))
+  })
+  return(do.call(rbind, dfs))
+}
+mst <- slingMST2(pto)
+curves_bkup <-curves; mst_bkup <- mst
+mst$Lineage <- as.character(mst$Lineage)
+curves$Lineage <- as.numeric(curves$Lineage)
+curves$colors <- c('black', 'orange', 'red')[curves$Lineage]
+curves <- curves %>% arrange(Order)
+
+pdf("~/xfer/test.pdf")
+DimPlot(seu_i, label=TRUE, repel=TRUE, reduction='pca',
+               group.by='immgen.fine.cluster.simple', pt.size=0.5)
+
+ggp <- DimPlot(seu_i, label=TRUE, repel=TRUE, reduction='pca',
+        group.by='seurat_clusters', pt.size=0.5, combine=F)
+ggf <- FeaturePlot(seu_i, features=top_gene_name, reduction='pca',
+               pt.size=0.5, order=T, ncol=4, combine=F)
+
+ggp[[1]] + 
+  geom_point(data = mst, aes(x=PC_1, y=PC_2), size = 2) +
+  geom_path(data = curves,
+            aes(x=PC_1, y=PC_2, group = Lineage),
+            color=curves$color, size = 1)
+  
+ggp[[1]] + 
+  geom_path(data = curves,
+            aes(x=PC_1, y=PC_2, group = Lineage),
+            color=curves$color, size = 1)
+
+ggfs <- lapply(ggf, function(gg_i){
+  gg_i + 
+    geom_path(data = curves %>% arrange(Order),
+              aes(x=PC_1, y=PC_2, group = Lineage)) 
+})
+cowplot::plot_grid(plotlist=ggfs, ncol=3)
+  
+dev.off()
+
+
+
+
+
+
+
+plot(rd, pch=16, asp = 1,
+     col = c(brewer.pal(9,"Set1"), brewer.pal(8,"Set2"))[cl])
+lines(SlingshotDataSet(pto), type = 'l', lwd=2, col='black')
+pdf("~/xfer/test.pdf")
+ggplot(SlingshotDataSet(pto)) + geom_lines()
+# lines(SlingshotDataSet(pto), lwd=2, col='red')
+dev.off()
+lin1 <- getLineages(rd, cl, start.clus = '1')
+lin2 <- getLineages(rd, cl, start.clus= '1', end.clus = '3')
+
+# getCurves function:
+# construct smooth curves based on all the cells elimitating the problem of
+# cells projecting onto vertices of piece-wise linear trajectories
+#
+# When only a single lineage, it is the principal curve  through the center
+# of the data.When two or more lineages, the algorithm averages curves near
+# shared cells.Both lineages should agree on cells that have yet to differentiate
+crv1 <- getCurves(lin1)
+
+############################################
+#### 2.a Split Tumor and LN; preprocess ####
+dir.create(file.path(outdir, "dimplot"), showWarnings = F)
+dir.create(file.path(outdir, "markers"), showWarnings = F)
+if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "4_seu_anno.rds"))
+immgen_label <- setNames('immgen.label.main', "main")
+marker_file <- paste0("markers_per_celltype.", names(immgen_label), ".rds")
 
 #split into tumor-ln, re-run umap on this smaller subset and re-cluster
 seu$LN_Tumor <- gsub("_.*", "", seu$orig.ident)
 ln_tumor <- unique(seu$LN_Tumor)
 
-# seu_ln <- subset(seu, idents='LN')
-# seu_tumor <- subset(seu, idents='Tumor')
-
 # Re-run PCA and UMAP on the subsetted SCT assays
 seu_ln_tumor <- lapply(setNames(ln_tumor, ln_tumor), function(ln_or_tumor){
-  Idents(seu) <- 'LN_Tumor'
-  seu_i <- subset(seu, idents=ln_or_tumor)
-  DefaultAssay(seu_i) <- 'SCT'
-  
-  #Confirm #PC's determined explain > 95% of variance
-  seu_i <- RunPCA(seu_i, npcs=50, verbose = FALSE)
-  stdev <- seu_i@reductions$pca@stdev
-  var <- stdev^2
-  PCNum <-  min(which(cumsum(var)/sum(var) >= 0.9))
-  seu_i <- FindNeighbors(object = seu_i, dims = 1:PCNum)
-  seu_i <- RunUMAP(object = seu_i, dims = 1:PCNum, n.epochs=200L)
-  seu_i <- FindClusters(object = seu_i, resolution = 1.2)
+  rds_file <- paste0("seu_subset.", ln_or_tumor, ".rds")
+  if(file.exists(file.path(outdir, "annotation", rds_file))){
+    bed.se <- readRDS("/cluster/projects/mcgahalab/ref/scrna/scRNAseq_datasets/immgen.rds") 
+    
+    Idents(seu) <- 'LN_Tumor'
+    seu_i <- subset(seu, idents=ln_or_tumor)
+    DefaultAssay(seu_i) <- 'integrated'
+    
+    #Confirm #PC's determined explain > 95% of variance
+    seu_i <- RunPCA(seu_i, npcs=50, verbose = FALSE)
+    stdev <- seu_i@reductions$pca@stdev
+    var <- stdev^2
+    PCNum <-  min(which(cumsum(var)/sum(var) >= 0.9))
+    seu_i <- FindNeighbors(object = seu_i, dims = 1:PCNum)
+    seu_i <- RunUMAP(object = seu_i, dims = 1:PCNum, n.epochs=200L)
+    seu_i <- FindClusters(object = seu_i, resolution = 1.2)
+    
+    for(lbl in c('label.fine', 'label.main')){
+      singler_anno <- SingleR(test=GetAssayData(seu_i), ref=bed.se, 
+                              assay.type.test=1, labels=bed.se[[lbl]],
+                              clusters=seu_i$seurat_clusters)
+      cluster_ids <- setNames(singler_anno$labels, 
+                              as.character(rownames(singler_anno)))
+      id <- paste0("immgen.", lbl)
+      seu_i@meta.data[,id] <- cluster_ids[as.character(seu_i$seurat_clusters)]
+    }
+    saveRDS(seu_i, file=file.path(outdir, "annotation", rds_file))
+  } else {
+    seu_i <- readRDS(file=file.path(outdir, "annotation", rds_file))
+  }
   
   return(seu_i)
 })
 
-seu_markers_ln_tumor <- lapply(seu_ln_tumor, function(seu_i){
-  markers <- FindAllMarkers(object = seu_i, only.pos = TRUE, 
-                            min.pct = 0.25, thresh.use = 0.25, 
-                            test.use='wilcox', slot='data')
-  markers
-})
+saveRDS(seu_ln_tumor, file = file.path(datadir, "seurat_obj", "5_seu_tumorLn_split.rds"))
 
-seu_grp_markers <- lapply(seu_ln_tumor, function(seu_i){
-  seu_i$timepoint <- sapply(strsplit(seu_i$orig.ident, split="_"), function(i) i[3])
-  seu_i$treatment <- sapply(strsplit(seu_i$orig.ident, split="_"), function(i) i[2])
-  seu_i$tissue_treatment <- with(seu_i@meta.data, paste0(LN_Tumor, "_", treatment))
-  
-  DefaultAssay(seu_i) <- 'RNA'
-  Idents(seu_i) <- 'bp.fine.cell2'
-  tissue_treatment <- unique(seu_i$tissue_treatment)
-  ct_markers <- lapply(setNames(tissue_treatment,tissue_treatment), function(sub){
-    
-    ids <- table(seu_i@meta.data[,c('tissue_treatment', 'orig.ident')])[sub,]
-    ids <- ids[which(ids!=0)]
-    
-    celltypes <- levels(Idents(seu_i))
-    lapply(setNames(celltypes, celltypes), function(celltype){
-      print(paste0(celltype, "..."))
-      tryCatch({
-        markers <- FindMarkers(seu_i, slot = "data",test.use = "wilcox", 
-                               ident.1=names(ids)[1], ident.2=names(ids)[2], 
-                               group.by='orig.ident', subset.ident=celltype) %>%
-          filter(p_val_adj < 0.05)
-        
-        c2 <- iterateMsigdb(species='Mus musculus', 
-                            lfc_v=setNames(markers$avg_log2FC, sym2entrez_ids[rownames(markers)]), 
-                            fun=gseaFun,
-                            msig_lvls=list('C2'=list('CP:REACTOME')))
-        return(list("markers"=markers, "gsea"=as.data.frame(c2[[1]][[1]][,4:10])))
-      }, error=function(e){NULL})
-    })
-  })
-  return(ct_markers)
-})
+################################################################################
+#### 2.c Split Tumor and LN; Calculate proportion of cells per group/sample ####
+if(!exists("seu_ln_tumor")) seu_ln_tumor <- readRDS(file = file.path(datadir, "seurat_obj", "5_seu_tumorLn_split.rds"))
+if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "4_seu_anno.rds"))
 
-pdf(file.path(outdir, "clusters", "markers_deg.pdf"), width = 15, width = 10)
-pdf(file.path("~/xfer", "markers_deg.pdf"), height = 20, width = 10)
-lapply(names(seu_ln_tumor), function(id){
-  markers_i <- seu_markers_ln_tumor[[id]]
-  seu_i <- seu_ln_tumor[[id]]
-  
-  top.markers <- do.call(rbind, lapply(split(markers_i, markers_i$cluster), head, n=12L))
-  DoHeatmap(seu_i, features = top.markers$gene, raster=T, 
-            group.by='seurat_clusters') + ggtitle(id)
-
-})
-dev.off()
-
-# Calculate proportion of cell-types per sample
 clusters <- list('seurat_clusters'=c("orig.ident", 'seurat_clusters'), 
-                 'bp.fine.cell2'=c("orig.ident", 'bp.fine.cell2'),
-                 'clusters_cell'=c("seurat_clusters", 'bp.fine.cell2'))
+                 'immgen.label.main'=c("orig.ident", 'immgen.fine.cluster.simple'),
+                 'clusters_cell'=c("orig.ident", 'immgen.fine.cluster.simple'))
+
+# Calculate proportion of cell-types per sample for the entire sample
+celltype_props <- lapply(clusters, function(cl){
+  celltype_prop <- table(seu@meta.data[,c(cl[1], cl[2])]) %>% 
+      apply(., 1, function(i) i / sum(i)) %>%
+      round(., 6) %>% 
+      as.data.frame() 
+  celltype_prop[is.na(celltype_prop)] <- 0
+  return(celltype_prop)
+})
+
+
+# Calculate proportion of cell-types per sample for the Tumor_LN split
+clusters <- list('seurat_clusters'=c("orig.ident", 'seurat_clusters'), 
+                 'immgen.label.main'=c("orig.ident", 'immgen.label.fine'),
+                 'clusters_cell'=c("seurat_clusters", 'immgen.label.fine'))
 celltype_props <- lapply(clusters, function(cl){
   celltype_prop <- lapply(seu_ln_tumor, function(seu_i){
     table(seu_i@meta.data[,c(cl[1], cl[2])]) %>% 
@@ -667,18 +1673,71 @@ celltype_props <- celltype_props[-3]
 
 
 .plotIt <- function(x) {
-  x %>%
+  meltx <- x %>%
     round(., 3) %>%
     melt() %>%
     rename_with(., ~ c('Sample', 'cellType', 'proportion')) %>%
     left_join(ref_tbl, 
               by=c('Sample'='Sample')) %>%
-    mutate(Sample=factor(Sample, levels=ref_lvls)) %>%
-    ggplot(., aes(x=Sample, y=cellType, fill=proportion)) +
-    facet_grid(cols=vars(join), scales='free') +
-    geom_tile() +
-    scale_fill_gradientn(colors = colorPal(10)) +
-    theme(axis.text.x = element_text(angle = 90))
+    mutate(Sample=factor(Sample, levels=ref_lvls),
+           ct_join=paste0(cellType, "_", join))
+  
+  auc_delta_val <- meltx %>%   
+    group_by(ct_join) %>%
+    mutate(delta=-1*diff(proportion)) %>%
+    filter(V3=='PBS')
+  auc_delta_vals <- split(auc_delta_val, auc_delta_val$join)
+  
+  .setVal <- function(x, val=0, dir='pos'){
+    if(dir=='pos'){
+      x[x<=val] <- val
+    } else{
+      x[x>=val] <- val
+    }
+    return(x)
+  }
+  .gg <- function(x, xlim, rm.y=FALSE){
+    rm <- theme(axis.text.y = element_blank(), 
+                axis.ticks.y = element_blank())
+    gg <- ggplot(x, aes(x=delta, y=cellType)) +
+      # facet_grid(cols=vars(join), scales='free') +
+      geom_bar(stat='identity', position = 'dodge') +
+      xlim(xlim) +
+      scale_fill_gradientn(colors = 'black') +
+      theme_classic() +
+      theme(axis.text.x = element_text(angle = 90),
+            axis.title.y = element_blank(),
+            axis.title.x = element_blank())
+    if(rm.y) gg + rm else gg
+  }
+  
+  pgrids <- lapply(auc_delta_vals, function(auc_i){
+    delta_neg_gg <- auc_i %>%
+      mutate(delta=.setVal(delta, dir='neg')) %>%
+      .gg(., xlim=c(-0.5,0)) + 
+      geom_vline(xintercept = 0) +
+      theme(axis.line.y = element_blank())
+    
+    hm_gg <- ggplot(auc_i, aes(x=join, y=cellType, fill=proportion)) +
+      geom_tile() +
+      scale_fill_gradientn(colors = colorPal(10)) +
+      theme_classic() +
+      theme(axis.text.x = element_text(angle = 90),
+            axis.text.y = element_blank(),
+            axis.title.y = element_blank(), 
+            axis.ticks.y = element_blank(),
+            axis.line.y = element_blank(),
+            axis.title.x = element_blank(),
+            legend.position = 'bottom') 
+    delta_pos_gg <- auc_i %>%
+      mutate(delta=.setVal(delta, dir='pos')) %>%
+      .gg(., xlim=c(0,0.5), rm.y=T)
+    
+    plot_grid(delta_neg_gg, hm_gg, delta_pos_gg, nrow=1, 
+              align='h', axis='bt',rel_widths = c(4.5, 1, 3))
+  })
+  
+  plot_grid(plotlist=pgrids, nrow=1)
 }
 winsorize <- function(x, probs=c(0.05, 0.95)) {
   q <- quantile(as.numeric(x), probs)
@@ -687,57 +1746,337 @@ winsorize <- function(x, probs=c(0.05, 0.95)) {
   return(x)
 }
 
-pdf(file.path(outdir, "dimplot", "cellType_proportions.pdf"), width = 15)
 col <- c('#feebe2', '#dd3497', '#7a0177')
 colorPal <- grDevices::colorRampPalette(col)
 # celltype_prop %>% t() %>%
-ref_tbl <- colnames(celltype_props) %>% 
+ref_tbl <- colnames(celltype_props[[1]]) %>% 
   strsplit(., "_", .) %>% 
   do.call(rbind, .) %>% 
   as.data.frame() %>%
-  mutate(Sample=colnames(celltype_prop))
+  mutate(Sample=colnames(celltype_props[[1]]))
 ref_tbl$join <- with(ref_tbl, paste0(V1, "_", V2))
 ref_tbl$V1 <- factor(ref_tbl$V1, c('LN', 'Tumor'))
 ref_tbl$V2 <- factor(ref_tbl$V2, c('WT', 'KO'))
 ref_tbl$V3 <- factor(ref_tbl$V3, c('PBS', '72h'))
 ref_lvls <- ref_tbl[with(ref_tbl, order(V1, V2, V3)),]$Sample
-  
-# apply(celltype_prop, 1, function(i) scales::rescale(i, to=c(0,1))) %>%
-gg_cps <- lapply(celltype_props, function(celltype_prop){
-  mad_gg <- apply(celltype_prop, 1, function(i) {
-    mad_i <- (i-median(i))/mad(i)
-    if(any(is.nan(mad_i) | is.infinite(mad_i))){
-      mad_i[which(is.nan(mad_i) | is.infinite(mad_i))] <- 0
-    }
-    return(mad_i)
-  }) %>% 
-    winsorize(., probs=c(0, 0.99)) %>% 
-    .plotIt() + ggtitle("MAD proportions")
- 
- abs_gg <- celltype_prop  %>% 
-    t() %>% .plotIt() + ggtitle("Absolute proportions") + theme()
- 
- plot_grid(mad_gg, abs_gg, nrow=1)
-})
+
+gg_cps <- celltype_props[[2]]  %>% 
+  t() %>% .plotIt() + ggtitle("Absolute proportions")
+
+pdf(file.path(outdir, "dimplot", "cellType_proportions.pdf"), width = 15)
 gg_cps
 dev.off()
 
 pdf(file.path(outdir, "dimplot", "dimplot_subsample.pdf"), width = 15)
+# pdf(file.path("~/xfer", "dimplot_subsample.pdf"), width = 15)
 DimPlot(seu_ln_tumor$Tumor, label=TRUE, repel=TRUE, reduction='umap',
-        group.by='bp.fine.cluster2', pt.size=0.5, split.by='orig.ident')
+        group.by='immgen.label.main', pt.size=0.5, split.by='orig.ident')
+DimPlot(seu_ln_tumor$Tumor, label=TRUE, repel=TRUE, reduction='umap',
+        group.by='immgen.label.fine', pt.size=0.5, split.by='orig.ident')
 DimPlot(seu_ln_tumor$Tumor, label=TRUE, repel=TRUE, reduction='umap',
         group.by='seurat_clusters', pt.size=0.5, split.by='orig.ident')
 DimPlot(seu_ln_tumor$LN, label=TRUE, repel=TRUE, reduction='umap',
-        group.by='bp.fine.cluster2', pt.size=0.5, split.by='orig.ident')
+        group.by='immgen.label.main', pt.size=0.5, split.by='orig.ident')
+DimPlot(seu_ln_tumor$LN, label=TRUE, repel=TRUE, reduction='umap',
+        group.by='immgen.label.fine', pt.size=0.5, split.by='orig.ident')
 DimPlot(seu_ln_tumor$LN, label=TRUE, repel=TRUE, reduction='umap',
         group.by='seurat_clusters', pt.size=0.5, split.by='orig.ident')
 dev.off()
 
 
+######################################################################
+#### 2.b Split Tumor and LN; differential expression per celltype ####
+if(!exists("seu_ln_tumor")) seu_ln_tumor <- readRDS(file = file.path(datadir, "seurat_obj", "5_seu_tumorLn_split.rds"))
+if(!exists("seu"))  seu <- readRDS(file = file.path(datadir, "seurat_obj", "4_seu_anno.rds"))
+
+# Find all markers that identify each individual `seurat_cluster`, using wilcoxon
+seu_markers_ln_tumor <- lapply(seu_ln_tumor, function(seu_i){
+  markers <- FindAllMarkers(object = seu_i, only.pos = TRUE, 
+                            min.pct = 0.25, thresh.use = 0.25, 
+                            test.use='wilcox', slot='data')
+  markers
+})
+
+# Find markers that separate Treatment condition for each organ and cell-type
+# immgen_label <- setNames('immgen.label.fine', "fine")
+seu_grp_markers <- lapply(seu_ln_tumor, function(seu_i){
+  if(file.exists(file.path(outdir, "clusters", marker_file))) stop("markers exists")
+  # Assign metadata (e.g timepoint, treatment, and tissue-specific treatment)
+  seu_i$timepoint <- sapply(strsplit(seu_i$orig.ident, split="_"), function(i) i[3])
+  seu_i$treatment <- sapply(strsplit(seu_i$orig.ident, split="_"), function(i) i[2])
+  seu_i$tissue_treatment <- with(seu_i@meta.data, paste0(LN_Tumor, "_", treatment))
+  seu_i$tissue_timepoint <- with(seu_i@meta.data, paste0(LN_Tumor, "_", timepoint))
+  
+  # Split based on tissue-treatment (e.g. LN_KO and LN_WT to compare DEG betwee timepoints)
+  DefaultAssay(seu_i) <- 'RNA'
+  Idents(seu_i) <- immgen_label
+  tissue_treatment <- c(unique(seu_i$tissue_treatment),
+                        unique(seu_i$tissue_timepoint))
+  ct_markers <- lapply(setNames(tissue_treatment,tissue_treatment), function(sub){
+    col_id <- if(grepl("72h|PBS", sub)) 'tissue_timepoint' else 'tissue_treatment'
+    
+    ids <- table(seu_i@meta.data[,c(col_id, 'orig.ident')])[sub,]
+    ids <- ids[which(ids!=0)]
+    
+    # Iterate through each celltype (e.g. DEG between 72hr and BL, for T.Tregs)
+    celltypes <- levels(Idents(seu_i))
+    ct_marker <- lapply(setNames(celltypes, celltypes), function(celltype){
+      print(paste0(" > ", col_id, ": ", celltype, "..."))
+      tryCatch({
+        markers <- FindMarkers(seu_i, slot = "data",test.use = "wilcox", 
+                               ident.1=names(ids)[1], ident.2=names(ids)[2], 
+                               group.by='orig.ident', subset.ident=celltype) %>%
+          mutate(!!paste0("n.", names(ids[1])) := ids[1],
+                 !!paste0("n.", names(ids[2])) := ids[2])
+        markers_sig <- markers %>%
+          filter(p_val_adj <= 0.05)
+        
+        gsea_val <- iterateMsigdb(species='Mus musculus', 
+                                  lfc_v=setNames(markers$avg_log2FC, sym2entrez_ids[rownames(markers)]), 
+                                  fun=gseaFun,
+                                  msig_lvls=list('H'=list(NULL),
+                                                 'C2'=list('CP:REACTOME'),
+                                                 'C5'=list('GO:BP', 'GO:CC', 'GO:MF')))
+        gsea_val <- unlist(gsea_val, recursive=F)
+        gsea_val <- lapply(gsea_val, as.data.frame) %>%
+          do.call(rbind, .) %>% 
+          select(c(4:11))
+        gsea_val <- cbind(gsea_val, 
+              do.call(rbind, strsplit(rownames(gsea_val), split="\\.")) %>%
+                as.data.frame() %>%
+                rename_with(., ~ c("Cmain", "Csub", "geneset")))
+        return(list("markers"=markers, "marker_sig"=markers_sig, "gsea"=gsea_val))
+      }, error=function(e){NULL})
+    })
+  })
+  return(ct_markers)
+})
+if(!file.exists(file.path(outdir, "clusters", marker_file))){
+  saveRDS(seu_grp_markers,  file=file.path(outdir, "clusters", marker_file))
+} else {
+  seu_grp_markers <- readRDS(file.path(outdir, "clusters", marker_file))
+}
+
+# Output a csv of DEGs, split by Tumor and LN
+site_degs <- lapply(seu_grp_markers, function(deg){
+  deg_conds <- lapply(deg, function(deg_cond){
+    # Append celltypes
+    deg_ct <- lapply(deg_cond, function(ct) {
+      if(is.null(ct$markers)) return(NULL)
+      ct$markers %>% 
+        as.data.frame() %>%
+        tibble::rownames_to_column(., "gene")
+    }) %>%
+      data.table::rbindlist(., idcol='celltype')
+    return(deg_ct)
+  })
+  
+  # Combine the KO and WT conditions
+  deg_cond <- data.table::rbindlist(lapply(deg_conds,function(i){
+    i %>% as.data.frame() %>%
+      rename_with(.,  ~gsub("\\..*?_", "_", .), starts_with="n.") %>%
+      mutate(avg_log2FC=round(avg_log2FC, 3))
+  }), idcol='condition', fill=TRUE) %>%
+    mutate(condition=gsub("^.*_", "", condition))
+  return(deg_cond)
+})
+# Combine site type (LN and Tumor)
+degs <- data.table::rbindlist(site_degs, idcol='site')
+degs$ensemble <- sym2ens_ids[degs$gene]
+degs$biotype <- ens2biotype_ids[degs$ensemble]
+write.table(degs, file=file.path(outdir, "markers", "degs_per_celltype.csv"),
+            sep=",", row.names = F, col.names = T, quote = F)
+
+# Output a csv of GSEA values per celltype, split by Tumor and LN
+site_gseas <- lapply(seu_grp_markers, function(gsea){
+  gsea_conds <- lapply(gsea, function(gsea_cond){
+    # Append celltypes
+    gsea_ct <- lapply(gsea_cond, function(ct) {
+      if(is.null(ct$gsea)) return(NULL)
+      ct$gsea %>% 
+        as.data.frame() %>%
+        select(-core_enrichment)
+    }) %>%
+      data.table::rbindlist(., idcol='celltype')
+    return(gsea_ct)
+  })
+  
+  # Combine the KO and WT conditions
+  gsea_cond <- data.table::rbindlist(lapply(gsea_conds,function(i){
+    i %>% as.data.frame() %>%
+      rename_with(.,  ~gsub("\\..*_?", "_", .), starts_with="n.") %>%
+      mutate(NES=round(NES, 3),
+             enrichmentScore=round(enrichmentScore, 3))
+  }), idcol='condition') 
+  return(gsea_cond)
+})
+# Combine site type (LN and Tumor)
+gseas <- data.table::rbindlist(site_gseas, idcol='site') %>% 
+  select(-qvalues,-rank)
+write.table(gseas, file=file.path(outdir, "markers", "gseas_per_celltype.csv"),
+            sep=",", row.names = F, col.names = T, quote = F)
+
+
+####################################################
+#### 2.b Split Tumor and LN: Visualize the DEGs #####
+if(!exists("seu_grp_markers")) seu_grp_markers <- readRDS(file.path(outdir, "clusters", marker_file))
+if(!exists("seu_ln_tumor")) {
+  ln_tumor <- c("LN", "Tumor")
+  seu_ln_tumor <- lapply(setNames(ln_tumor, ln_tumor), function(ln_or_tumor){
+    rds_file <- paste0("seu_subset.", ln_or_tumor, ".rds")
+    seu_i <- readRDS(file=file.path(outdir, "annotation", rds_file))
+    return(seu_i)
+  })
+}
+  
+# Remove the PBS/72hr WT-KO comparisons (temporary)
+seu_grp_markers <- lapply(seu_grp_markers, function(i) i[c('LN_KO', 'LN_WT')])
+
+# Get all unique celltypes
+celltypes <- sapply(seu_ln_tumor, function(seu_i){
+  unique(seu_i@meta.data[,immgen_label])
+}) %>% 
+  unlist %>%  sort %>% unique
+
+# Get top_n significnat gene sets per group
+top_gs_all <- lapply(seu_grp_markers, function(lt_marker){
+  gseas <- lapply(unlist(lt_marker, recursive=F), function(i) {
+    if(is.null(i$gsea)) return(NULL)
+    i$gsea %>% 
+      as.data.frame() %>%
+      mutate("C"=paste0(Cmain, ".", Csub),
+             geneset=gsub("_", " ", geneset))
+  }) 
+  top_gs <- lapply(gseas, function(g){
+    if(is.null(g)) return(NULL)
+    sig_g <- g %>%
+      group_by(., C) %>% 
+      top_n(., 5, wt=-p.adjust) %>%
+      filter(., p.adjust <= 0.05)
+    return(split(sig_g$geneset, sig_g$C))
+  }) 
+  gs_groups <- sapply(gseas, function(i) unique(i$C)) %>% unlist() %>% unique()
+  
+  return(list("gs"=top_gs, "grps"=gs_groups))
+})
+
+gs_groups <- top_gs_all[[1]]$grps
+top_gs_sel <- lapply(setNames(gs_groups, gs_groups), function(gsg){
+  sapply(unlist(lapply(top_gs_all, function(i) i$gs), recursive=F), function(i) i[[gsg]]) %>% 
+    unlist() %>%
+    table() %>% 
+    sort() %>% 
+    tail(., 7) %>%
+    names()
+})
+top_gs_sel <- unlist(top_gs_sel)
+
+# Visualize the barplot of differential gene-sets per organ+celltype
+gg_plots <- lapply(seu_grp_markers, function(lt_marker){
+  gseas <- lapply(unlist(lt_marker, recursive=F), function(i) {
+    if(is.null(i$gsea)) return(NULL)
+    i$gsea %>% 
+      as.data.frame() %>%
+      mutate("C"=paste0(Cmain, ".", Csub),
+             geneset=gsub("_", " ", geneset),)
+  }) 
+  
+  # # Get top_n significnat gene sets per group
+  # top_gs <- lapply(gseas, function(g){
+  #   if(is.null(g)) return(NULL)
+  #   sig_g <- g %>%
+  #     group_by(., C) %>% 
+  #     top_n(., 5, wt=-p.adjust) %>%
+  #     filter(., p.adjust <= 0.05)
+  #   return(split(sig_g$geneset, sig_g$C))
+  # }) 
+  # gs_groups <- sapply(gseas, function(i) unique(i$C)) %>% unlist() %>% unique()
+  # top_gs_sel <- lapply(setNames(gs_groups, gs_groups), function(gsg){
+  #   sapply(top_gs, function(i) i[[gsg]]) %>% 
+  #     unlist() %>%
+  #     table() %>% 
+  #     sort() %>% 
+  #     tail(., 5) %>%
+  #     names()
+  # })
+  # top_gs_sel <- unlist(top_gs_sel)
+  
+  # Subset on the gsea values for only the top selected genesets
+  gseas_sel <- gseas %>% 
+    data.table::rbindlist(., idcol='celltype') %>%
+    mutate('condition'=gsub("^(.*?)\\..*", "\\1", celltype),
+           'celltype'=factor(gsub("^.*?\\.", "", celltype) %>%
+                               gsub(" \\(.*", "", .), levels=celltypes),
+           "sig_p"=as.integer(p.adjust <= 0.05)) %>%
+    filter(geneset %in% top_gs_sel) %>%
+    select(celltype, geneset, NES, C, condition, sig_p)
+  
+  # fill in missing celltypes
+  keymap <- with(gseas_sel, table(C, gsub(" .*", "", geneset)))
+  keymap <- which(t(keymap !=0), arr.ind=T) %>%
+    as.data.frame() %>%
+    mutate(Cid=rownames(keymap)[C]) %>%
+    select(Cid)
+  if(any(table(gseas_sel$celltype)==0)) {
+    missing_ct <- which(table(gseas_sel$celltype)==0)
+    missing_tbl <- with(gseas_sel, table(celltype, geneset))==0
+    missing_tbl_idx <- which(missing_tbl, arr.ind=T)[c(1:length(missing_ct)),,drop=F]
+
+    ct_placeholder <- gseas_sel[c(1:length(missing_ct)),,drop=F] %>%
+      mutate(NES=NA,
+             sig_p=0,
+             celltype=rownames(missing_tbl)[missing_tbl_idx[,1]],
+             geneset=colnames(missing_tbl)[missing_tbl_idx[,2]]) %>%
+      mutate(C=keymap[gsub(" .*", "", geneset),'Cid'])
+    gseas_sel <- rbind(gseas_sel, ct_placeholder)
+  }
+  
+  # Fill in missing values and plot
+  b <- c(-4, -2,  0, 2, 4)
+  ggp <- gseas_sel  %>%
+    mutate(NES=DescTools::Winsorize(NES, minval=min(b), maxval=max(b))) %>%
+    tidyr::complete(., condition, celltype, tidyr::nesting(geneset, C)) %>%
+    mutate(sig_p=replace_na(sig_p, 0)) %>%
+    ggplot(., aes(x=celltype, y=geneset, fill=NES)) +
+      facet_grid(C ~ condition, scales = "free_y", space='free', switch = "y") +
+      geom_tile() +
+      geom_point(data=. %>% as.data.frame(), aes(x=celltype, y=geneset, alpha=sig_p)) +
+      scale_alpha(range = c(0, 1)) +
+      theme_classic() +
+      scale_fill_gradientn(limits = c(min(b),max(b)),
+                           colours=c("#4575b4", "#d1e5f0", "white", "#fddbc7", "#b2182b"),
+                           breaks=b, labels=format(b)) +
+      theme(axis.text.y=element_text(size=8),
+            axis.text.x=element_text(angle=90, size=9),
+            strip.text.y.left = element_text(angle=90),
+            panel.spacing.x = unit(2, "lines")) +
+      scale_y_discrete(labels =  scales::wrap_format(26)) +
+      scale_x_discrete(drop=FALSE)
+  return(ggp)  
+})
+pdf(file.path(outdir, "markers", "gsea_per_celltype.pdf"), width = 10, height = 15)
+gg_plots
+dev.off()
 
 
 
-saveRDS(seu, file=file.path(datadir, "seurat_obj", "seu_anno.rds"))
+
+pdf(file.path(outdir, "markers", "markers_deg.pdf"), width = 15, width = 10)
+# pdf(file.path("~/xfer", "markers_deg.pdf"), height = 20, width = 10)
+lapply(names(seu_ln_tumor), function(id){
+  markers_i <- seu_markers_ln_tumor[[id]]
+  seu_i <- seu_ln_tumor[[id]]
+  
+  top.markers <- do.call(rbind, lapply(split(markers_i, markers_i$cluster), head, n=12L))
+  DoHeatmap(seu_i, features = top.markers$gene, raster=T, 
+            group.by='seurat_clusters') + ggtitle(id)
+
+})
+dev.off()
+
+
+
+
 
 ########################################################################
 #### 2.b Split by cell-type and calculate differential between sets ####
@@ -833,8 +2172,6 @@ sce <- slingshot(sce, clusterLabels = 'orig.ident', reducedDim = "PCA",
 
 
 
-FindMarkers(seu,
-            )
 
 
 
