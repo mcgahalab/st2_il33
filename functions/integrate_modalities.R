@@ -61,7 +61,7 @@
   return(all.len)
 }
 
-.getSubLca <- function(g, M, vertices){
+.getSubLca <- funcion(g, M, vertices){
   tbl <- table(M[vertices, vertices])
   message("Pruning network to get sub-fully connected networks")
   if(length(tbl) > 3){
@@ -69,7 +69,9 @@
       minval <- as.integer(names(tbl)[idx + 1])
       M.lvl <- ceiling(M[vertices,vertices]-minval)
       M.lvl[M.lvl<0] <- 0
-      unlist(sapply(.fconn_networks(M.lvl), .getLca, g=g) %>% sapply(., names))
+      sapply(.fconn_networks(M.lvl), function(j){
+        .getLca(vertices=j, g=g, get.sublvls=F)[,1]
+      }) %>% unlistget.sublvls
     })
   } else {
     sub.networks = NULL
@@ -77,42 +79,81 @@
   return(sub.networks)
 }
   
-.getLca <- function(g, vertices, get.sublvls=T, 
-                    M=NULL, force.subnetwork=T, verbose=F){
+.getLca <- function(g, vertices, get.sublvls=F, 
+                    M=NULL, force.subnetwork=T, verbose=F,
+                    level=2){
   if(length(vertices)==1) return(NULL)
-  parent_nodes = attr(lca(g, vertices, M=M, 
-                          get.sublvls=get.sublvls, 
-                          force.subnetwork=force.subnetwork), 'names')
+  ps_nodes = lca(g, vertices, M=M, 
+                 get.sublvls=get.sublvls, 
+                 force.subnetwork=force.subnetwork,
+                 level=level)
+  parent_nodes <- ps_nodes$parent
+  sub_nodes <- ps_nodes$sub
   
   if(verbose) message(paste(GOTERMS[parent_nodes], collapse="\n"))
   if(verbose) message(paste(as.character(GOTERMS[i]), collapse="\n"))
   if(length(parent_nodes) >0){
-    sapply(parent_nodes, function(pn){
+    X = sapply(parent_nodes, function(pn){
       sapply(shortest_paths(g, from=pn, to=vertices)$vpath, length)
-    }) %>% colSums %>% which.min
-  } else {
-    NULL
-  }
-}
-
-lca <- function(g, vertices, get.sublvls=F, M=NULL, force.subnetwork=T) {
-  pathi = ego(g, order=length(V(g)), nodes=vertices, mode='in') # original 'in'
-  res <- V(g)[[(Reduce(intersect, pathi))]]
-  
-  if((length(res) == 0)){
-    if(force.subnetwork & !is.null(M)){
-    subgo <- .getSubLca(g, M, vertices)
-    res <- as.character(subgo[[which.max(!sapply(subgo, is.null))]])
-    # cnts <- sapply(pathi, attr, which='names') %>% unlist %>% table
-    # res <- names(cnts[cnts==max(cnts)])
-    attr(res, 'names') = res
-    }  else {
-    res <- NA
+    })
+    idx <- which(colSums(X>0) == max(colSums(X>0)))
+    pid <- X[,idx,drop=F] %>% 
+      colSums %>% which.min %>% names
+    if(!is.null(sub_nodes)){
+      subid <- sub_nodes$GOID
+      subid <- if(length(subid)>0) subid else NA
+    } else {
+      subid <- NA
     }
+    res <- data.frame("parent"=pid, 
+                      "sub"=subid)
+  } else {
+    res <- NULL
   }
   return(res)
 }
 
+.getSlvlSize <- function(egopath, vertices, min.conn.size=0.5, level=2){
+  all_ids <- unlist(sapply(egopath, attr, which='names'))
+  high_conn_size <- (table(all_ids) > ceiling(min.conn.size*length(vertices)))
+  if(any(high_conn_size)){
+    uids <- all_ids[high_conn_size]
+    all_path_len <- uids %>%
+      sapply(., function(pn){
+        sapply(shortest_paths(g, from=pn, to=vertices)$vpath, length)
+      })
+    connected_cnt <- colSums(all_path_len >0)
+    res <- data.frame("GOID"=colnames(all_path_len), 
+               "tpath_length"=colSums(all_path_len), 
+               "tnetwork_size"=connected_cnt) %>%
+      dplyr::arrange(., desc(tnetwork_size), tpath_length) %>%
+      head(., level)
+  } else {
+    res <- as.data.frame(matrix(ncol=3, nrow=0)) %>%
+      magrittr::set_colnames(., c('GOID', 'tpath_length', 'tnetwork_size'))
+  }
+  return(res)
+}
+
+lca <- function(g, vertices, get.sublvls=F, M=NULL, force.subnetwork=T, level=2) {
+  pathi = ego(g, order=length(V(g)), nodes=vertices, mode='in') # original 'in'
+  res <- V(g)[[(Reduce(intersect, pathi))]]
+  if(get.sublvls){
+    subs <- .getSlvlSize(pathi, vertices, level=level)
+  } else {
+    subs <- NULL
+  }
+  
+  if((length(res) == 0)){
+    if(force.subnetwork & !is.null(M)){
+      subgo <- .getSubLca(g, M, vertices)
+      res <- as.character(subgo[[which.max(!sapply(subgo, is.null))]])
+    }  else {
+      res <- NULL
+    }
+  }
+  return(list("parent"=res, "sub"=subs))
+}
 
 ## Get all fully connected subnetworks from a binary matrix
 .fconn_networks <- function(X){
@@ -168,4 +209,35 @@ semantic.combine <- function(golist, g, min.cnt = 1){
     # }
   })
   return(aggregate_go)
+}
+
+
+####################
+#### Old Method ####
+.getLca <- function(g, vertices, get.sublvls=T, 
+                    M=NULL, force.subnetwork=T, verbose=F){
+  if(length(vertices)==1) return(NULL)
+  parent_nodes = attr(lca(g, vertices), 'names')
+  
+  if(verbose) message(paste(GOTERMS[parent_nodes], collapse="\n"))
+  if(verbose) message(paste(as.character(GOTERMS[i]), collapse="\n"))
+  if(length(parent_nodes) >0){
+    sapply(parent_nodes, function(pn){
+      sapply(shortest_paths(g, from=pn, to=vertices)$vpath, length)
+    }) %>% colSums %>% which.min
+  } else {
+    NULL
+  }
+}
+
+lca <- function(g, vertices, get.sublvls=F, M=NULL, force.subnetwork=T) {
+  pathi = ego(g, order=length(V(g)), nodes=vertices, mode='in') # original 'in'
+  res <- V(g)[[(Reduce(intersect, pathi))]]
+  
+  if((length(res) == 0) & force.subnetwork){
+    cnts <- sapply(pathi, attr, which='names') %>% unlist %>% table
+    res <- names(cnts[cnts==max(cnts)])
+    attr(res, 'names') = res
+  }
+  return(res)
 }
