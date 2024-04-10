@@ -4,7 +4,17 @@ def percentile(data, perc: int):
     size = len(data)
     return sorted(data)[int(math.ceil((size * perc) / 100)) - 1]
 
-def diff_velocity_graph(adatas, basis, label, components=None, vkey='velocity', legend_loc='none', legend_fontsize=None, legend_fontweight=None):
+adatas = adatas['ko']
+def diff_velocity_graph(adatas, basis, label, components=None, vkey='velocity',
+legend_loc='none', legend_fontsize=None, legend_fontweight=None,
+refkey='ko', altkey='wt'):
+    keys = [refkey, altkey]
+    keys.sort()
+    adatakeys = list(adatas.keys())
+    adatakeys.sort()
+    if adatakeys != keys:
+        raise ValueError('refkey and altkey dont match adatas keys')
+    
     X_grids = {}
     V_grids = {}
     for adata_id in list(adatas.keys()):
@@ -29,22 +39,28 @@ def diff_velocity_graph(adatas, basis, label, components=None, vkey='velocity', 
     # velocity comparison of equivalent locations
     maxdist = 0.05
     match_arr = np.empty((0,2))
-    for row_ko in X_grids['ko']:
+    for row_ko in X_grids[refkey]:
         row_ko_match=[]
-        for row_wt in X_grids['wt']:
+        for row_wt in X_grids[altkey]:
+            # absolute distance between ref_i and alt_J
             row_ko_match.append(np.absolute(np.array(row_ko) - np.array(row_wt)).sum())
+        # For each row in REF, find the ALT row with the minimum distance
         minIndex, minValue = min(enumerate(row_ko_match), key=lambda v: v[1])
         minRow = [int(minIndex), round(minValue,2)]
+        # match_arr is a 2-column matrix:
+        #  col1 = for i = 1..I; row index from X_grids[altkey] that matches the row for X_grids[refkey][i,]
+        #  col2 = for i = 1..I; the absolute difference between X_grids[altkey] row and X_grids[refkey][i,]
         match_arr = np.vstack([match_arr, minRow])
     
+    # Convert X_grids[altkey] index to an int
     idx = list(match_arr[:,0])
     idx_int = list()
     for i in idx:
         idx_int.append(int(i))
     
     # Calculate the velocity difference between the best-index matched spots
-    V_grid_unity = V_grids['ko'] - V_grids['wt'][idx_int,:]
-    X_grid_unity = X_grids['ko'] # X_grids['wt'][idx_int,:]
+    V_grid_unity = V_grids[refkey] - V_grids[altkey][idx_int,:]
+    X_grid_unity = X_grids[refkey] # X_grids[altkey][idx_int,:]
     v_arr_sums = list()
     for v_arr in V_grid_unity:
         v_arr_sums.append(np.absolute(v_arr).sum())
@@ -84,7 +100,7 @@ def diff_velocity_graph(adatas, basis, label, components=None, vkey='velocity', 
     quiver_kwargs.update({"headwidth": hw / 2, "headaxislength": hal / 2})
     quiver_kwargs.update({"color": arrow_color, "linewidth": 0.2, "zorder": 3})
     size = 4 * scv.pl.utils.default_size(adata)
-    title = 'KO [red] - WT [blue] difference'
+    title = refkey.upper() + ' [red] - ' + altkey.upper() + ' [blue] difference'
     
     layer=None
     scatter_kwargs = {
@@ -118,17 +134,17 @@ def diff_velocity_graph(adatas, basis, label, components=None, vkey='velocity', 
     #)
     quiver_kwargs.update({"color": 'grey'})
     ax.quiver(
-        X_grids['ko'][:, 0], X_grids['ko'][:, 1], V_grids['ko'][:, 0], V_grids['ko'][:, 1], **quiver_kwargs
+        X_grids[refkey][:, 0], X_grids[refkey][:, 1], V_grids[refkey][:, 0], V_grids[refkey][:, 1], **quiver_kwargs
     )
     quiver_kwargs.update({"color": 'red', "headwidth" : hw*10, "headaxislength" : hal*10, "headlength" : hl*10})
     ax.quiver(
-        X_grids['ko'][high_diff_idx, 0], X_grids['ko'][high_diff_idx, 1],
-        V_grids['ko'][high_diff_idx, 0], V_grids['ko'][high_diff_idx, 1], **quiver_kwargs
+        X_grids[refkey][high_diff_idx, 0], X_grids[refkey][high_diff_idx, 1],
+        V_grids[refkey][high_diff_idx, 0], V_grids[refkey][high_diff_idx, 1], **quiver_kwargs
     )
     quiver_kwargs.update({"color": 'blue', "headwidth" : hw*10, "headaxislength" : hal*10, "headlength" : hl*10})
     ax.quiver(
-        X_grids['wt'][high_diff_idx, 0], X_grids['wt'][high_diff_idx, 1],
-        V_grids['wt'][high_diff_idx, 0], V_grids['wt'][high_diff_idx, 1], **quiver_kwargs
+        X_grids[altkey][idx_int,:][high_diff_idx, 0], X_grids[altkey][idx_int,:][high_diff_idx, 1],
+        V_grids[altkey][idx_int,:][high_diff_idx, 0], V_grids[altkey][idx_int,:][high_diff_idx, 1], **quiver_kwargs
     )
     
     

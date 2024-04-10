@@ -20,21 +20,23 @@ import matplotlib.backends.backend_pdf as backend_pdf
 from matplotlib import pyplot as plt
 import matplotlib as mp
 
-
+os.chdir("/cluster/home/quever/git/test")
+import custom.analysis as st2
+import custom.scvelo as customvelo
 
 ####################
 #### Parameters ####
 # Setup:
 model = 'Tumor'   # LN or Tumor
-term = 'wt'  # ko, wt, or merged
+# term = 'wt'  # ko, wt, or merged
 batch='B1' # B1, B2
 label_id = 'manual_anno'
 sample_id = 'orig.ident'
 basis_id = 'umap_orig' # umap umap_orig
-
+celltype = 'tregs' # 'tregs' 'cd8'
 
 outdir = Path("/cluster/home/quever/xfer/")
-indir = Path("/cluster/projects/mcgahalab/data/mcgahalab/st2_il33/scrna_tdln_tumor_7d/results/scVelo/")
+indir = Path("/cluster/projects/mcgahalab/data/mcgahalab/st2_il33/scrna_tdln_tumor_7d/results/scVelo/", celltype)
 wtdata = scv.read(indir / ("seu_velo." + model + "." + batch + ".WT.h5ad"))
 kodata = scv.read(indir / ("seu_velo." + model + "." + batch + ".KO.h5ad"))
 mergeddata = scv.read(indir / ("seu_velo." + model + "." + batch + ".all.h5ad"))
@@ -54,22 +56,57 @@ os.chdir("/cluster/home/quever")
 adatas = {}
 for term in ['ko', 'wt']:
     print(term)
-    adata = preprocess_velo(model, batch, term, indir, datadict)
-    os.chdir("/cluster/home/quever")
-    adata = velocity_analysis(adata, outdir, model, batch, term, sample_id, basis_id, label_id)
-    adatas[term] = adata
+    adatas_subset = {}
+    for subset in ['3d', 'Un']:
+        print(term + "_" + subset)
+        adata = st2.preprocess_velo(model, batch, term, indir, datadict, subset=subset)
+        os.chdir("/cluster/home/quever")
+        adata = st2.velocity_analysis(adata, outdir, model, batch, term, sample_id, basis_id, label_id)
+        #adatas[term] = adata
+        adatas_subset[subset] = adata
+    adatas[term] = adatas_subset
 
-outf = Path(outdir, model + "_" + batch + ".pdf")
-diff_velocity_graph(adatas, basis_id, label_id, legend_loc='best', legend_fontsize=6, legend_fontweight='normal')
-plt.savefig(outf, format="pdf")
-plt.show()
+term = 'merged'
+adatas_subset = {}
+for subset in ['WT_3d', 'KO_3d']:
+    print(term + "_" + subset)
+    adata = st2.preprocess_velo(model, batch, term, indir, datadict, subset=subset)
+    os.chdir("/cluster/home/quever")
+    adata = st2.velocity_analysis(adata, outdir, model, batch, term, sample_id, basis_id, label_id)
+    #adatas[term] = adata
+    adatas_subset[subset] = adata
+
+adatas[term] = adatas_subset
+
+outf = Path(outdir, celltype + "_" + model + "_" + batch + ".pdf")
+pdf = backend_pdf.PdfPages(outf)
+for tissue in ['wt', 'ko']:
+    st2.diff_velocity_graph(adatas[tissue], basis_id, label_id, legend_loc='best',
+        legend_fontsize=6, legend_fontweight='normal',
+        refkey='Un', altkey='3d')
+    fig=plt.show()
+    pdf.savefig(fig)
+
+tissue='merged'
+st2.diff_velocity_graph(adatas[tissue], basis_id, label_id, legend_loc='best',
+    legend_fontsize=6, legend_fontweight='normal',
+    refkey='WT_3d', altkey='KO_3d')
+fig=plt.show()
+pdf.savefig(fig)
+
+pdf.close()
+# plt.savefig(outf, format="pdf")
+#     plt.show()
 
 
 ########################################
 #### Preprocessing and loading data ####
 # Preprocess the data
-def preprocess_velo(model, batch, term, indir, datadict):
-    processed_f = "seu_velo." + model + "." + batch + "." + term + ".processed.h5ad"
+def preprocess_velo(model, batch, term, indir, datadict, subset=None, subsetflank="_"):
+    if subset is None:
+        processed_f = "seu_velo." + model + "." + batch + "." + term + ".processed.h5ad"
+    else:
+        processed_f = "seu_velo." + model + "." + batch + "." + term + "." + subset + ".processed.h5ad"
     processed_f_path = indir / processed_f
     adata = datadict[term]
     if os.path.exists(processed_f_path):
@@ -77,25 +114,29 @@ def preprocess_velo(model, batch, term, indir, datadict):
         adata = scv.read(processed_f_path)
     else:
         print("processing...")
-        if True:
-            scv.pp.filter_and_normalize(adata, min_shared_counts=20, n_top_genes=3000)
-            sc.tl.pca(adata)
-            sc.pp.neighbors(adata, n_pcs=30, n_neighbors=30)
-            scv.pp.moments(adata, n_pcs=30, n_neighbors=30)
-            scv.tl.recover_dynamics(adata) # learn full transcriptional dynamics of splicing kinetics
-            scv.tl.velocity(adata, mode='dynamical')
-            # var_names = ['Ly6c2', 'Ly6g', 'Itgam', 'H2-Ab1']
-            #scv.tl.differential_kinetic_test(adata, groupby='seurat_clusters') # var_names=var_names,
-            #scv.tl.velocity(adata, diff_kinetics=True)
-            scv.tl.velocity_graph(adata)
-            scv.tl.velocity_confidence(adata)
-            scv.tl.latent_time(adata)
-            
-            # Saving error _index fix: https://github.com/theislab/scvelo/issues/255
-            adata.__dict__['_raw'].__dict__['_var'] = adata.__dict__['_raw'].__dict__['_var'].rename(columns={'_index': 'features'})
-            # del adata.raw # dotplot error: f"Could not find keys '{not_found}' in columns of `adata.{dim}` or in"
-            # del(adata.var['_index']) #if still error while saving
-            adata.write(filename=processed_f_path, compression='gzip')
+        if subset != None:
+            subset_pattern = subsetflank + subset
+            adata2 = adata[ [subset_pattern in i for i in adata.obs['orig.ident']] ]
+            adata = adata2
+        
+        scv.pp.filter_and_normalize(adata, min_shared_counts=20, n_top_genes=3000)
+        sc.tl.pca(adata)
+        sc.pp.neighbors(adata, n_pcs=30, n_neighbors=30)
+        scv.pp.moments(adata, n_pcs=30, n_neighbors=30)
+        scv.tl.recover_dynamics(adata) # learn full transcriptional dynamics of splicing kinetics
+        scv.tl.velocity(adata, mode='dynamical')
+        # var_names = ['Ly6c2', 'Ly6g', 'Itgam', 'H2-Ab1']
+        #scv.tl.differential_kinetic_test(adata, groupby='seurat_clusters') # var_names=var_names,
+        #scv.tl.velocity(adata, diff_kinetics=True)
+        scv.tl.velocity_graph(adata)
+        scv.tl.velocity_confidence(adata)
+        scv.tl.latent_time(adata)
+        
+        # Saving error _index fix: https://github.com/theislab/scvelo/issues/255
+        adata.__dict__['_raw'].__dict__['_var'] = adata.__dict__['_raw'].__dict__['_var'].rename(columns={'_index': 'features'})
+        # del adata.raw # dotplot error: f"Could not find keys '{not_found}' in columns of `adata.{dim}` or in"
+        # del(adata.var['_index']) #if still error while saving
+        adata.write(filename=processed_f_path, compression='gzip')
     return adata
 
 adata = preprocess_velo(model, batch, term, indir, datadict)

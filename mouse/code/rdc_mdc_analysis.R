@@ -1,6 +1,7 @@
+# renv::load("~/downloads/renvs")
 ## Sara's mouse_DC project
 # Comparing rDC and mDC between Cis and PBS treated samples in the WT and Tumor
-library(WGCNA)
+# library(WGCNA)
 library(cowplot)
 library(igraph)
 library(ggplot2)
@@ -19,24 +20,6 @@ library(SCENIC)
 # SCENIC params
 scenic_org_code <- 'mgi'
 rcis_db <- '/cluster/projects/mcgahalab/ref/scenic/mm10__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather'
-
-# Create ENZ -> SYMBOL mapping key
-genome_gse <- org.Mm.eg.db
-txby <- keys(genome_gse, 'ENSEMBL')
-gene_ids <- mapIds(genome_gse, keys=txby, column='SYMBOL',
-                   keytype='ENSEMBL', multiVals="first")
-ens2sym_ids <- gene_ids
-ens2entrez_ids <- mapIds(genome_gse, keys=txby, column='ENTREZID',
-                         keytype='ENSEMBL', multiVals="first")
-entrez2ens_ids <- setNames(names(ens2entrez_ids), ens2entrez_ids)
-
-txby <- keys(genome_gse, 'SYMBOL')
-ens_ids <- mapIds(genome_gse, keys=txby, column='ENSEMBL',
-                  keytype='SYMBOL', multiVals="first")
-sym2ens_ids <- ens_ids
-sym2entrez_ids <- mapIds(genome_gse, keys=txby, column='ENTREZID',
-                         keytype='SYMBOL', multiVals="first")
-entrez2sym_ids <- setNames(names(sym2entrez_ids), sym2entrez_ids)
 
 # Read in gtf file to map ENS->Biotype
 gtf <- '/cluster/projects/mcgahalab/ref/genomes/mouse/GRCm38/GTF/genome.gtf'
@@ -74,29 +57,42 @@ source("~/git/mini_projects/mini_functions/wgcnaComplexHeatmap.R")
 source("~/git/mini_projects/mini_functions/iterateMsigdb.R")
 source("~/git/mini_projects/mini_functions/linearModelEigen.R")
 source("~/git/mini_projects/mini_functions/gsea2CytoscapeFormat.R")
+source("~/git/mini_projects/mini_functions/geneMap.R")
 source("~/git/st2_il33/functions/msm_ssm_functions.R")
 
-###########################
-#### 0. Metadata setup ####
-pca_dir <- file.path(pdir, "results", "manual", "pca")
-dir.create(pca_dir, showWarnings = F, recursive = F)
-max_pc <- 10  # Plot PC component 1 to X
-visualize <- FALSE
+gm <- geneMap("Mus musculus")
 
-# Set up the metadata
-sample_ids <- colnames(dds_main)
-sample_ids <- gsub("B_1", "B1", sample_ids) %>% gsub("B_2", "B2", .)
-colnames(dds_main) <- sample_ids
-samples_meta <- strsplit(sample_ids, split="_") %>% do.call(rbind,.) %>%
-  as.data.frame %>%
-  rename_with(., ~c('dc', 'tissue', 'treatment', 'id')) %>%
-  mutate(sample=sample_ids,
-         group=paste(dc, tissue, treatment, sep="_")) %>%
-  tibble::column_to_rownames(., 'sample')
 
-# Split into All_samples, INS-C (ovarian), INS-D (melanoma) samples
-sample_l <- split(sample_ids, f=samples_meta$dc)
-sample_l[['All']] <- sample_ids # All samples - for PCA triangulation on treatment
+#############################################
+#### 0. Create DESeq object and Metadata ####
+cts <- read.table(file.path(pdir, "results", "counts", "all.tsv"),
+                  header = T, check.names = F, stringsAsFactors = F) %>%
+  tibble::column_to_rownames(., "gene") %>%
+  rename_with(., ~gsub("genesresults", "", .))
+meta <- read.table(file.path(pdir, "config", "samples.tsv"),
+                  header=T, check.names=F, stringsAsFactors = F)  %>%
+  mutate("group"=gsub("^.*_([ABCDE]).*", "\\1", sample_name),
+         "modifier"=gsub("^.*_[ABCDE]_?(.*)", "\\1", sample_name),
+         "dc"=gsub("_.*", "", sample_name),
+         "treatment"=gsub("^.*_", "", condition),
+         "wt.t"=gsub("^.*_(.*)_.*", "\\1", condition)) %>%
+  tibble::column_to_rownames(., "sample_name")
+meta <- meta[colnames(cts),]
+dds <- DESeqDataSetFromMatrix(countData=cts,
+                              colData=meta,
+                              design=as.formula('~condition'))
+
+# remove uninformative columns
+min.cnt <- 5
+min.n <- 0.1
+dds <- dds[ which(rowSums(counts(dds)>min.cnt) > (ncol(dds)*min.n)),]
+# normalization and preprocessing
+dds <- DESeq(dds)
+
+dir.create(file.path(pdir, "results", "deseq2"))
+dir.create(file.path(pdir, "results", "metadata"))
+saveRDS(dds, file=file.path(pdir, "results", "deseq2", "all.rds"))
+saveRDS(dds, file=file.path(pdir, "results", "metadata", "meta.rds"))
 
 ############################
 #### 1.a) PCA analysis  ####
@@ -357,7 +353,7 @@ resl_msm_v_ssm <- lapply(samples_meta_treat_ln_l, function(col_grp){
 })
 res_msm_ssm <- lapply(resl_msm_v_ssm, function(i) i$res) %>% 
   purrr::reduce(., full_join, by='ens') %>% 
-  mutate("symbol"=ens2sym_ids[ens]) %>%
+  mutate("symbol"=gm$ENSEMBL$SYMBOL[ens]) %>%
   relocate(ens, symbol)
 resl[['Celltype']] <- c(lapply(resl_msm_v_ssm, function(i) i$res),
                         list("res"=res_msm_ssm))
@@ -573,7 +569,7 @@ resl_msm_v_ssm <- lapply(samples_meta_treat_ln_l, function(col_grp){
 })
 res_msm_ssm <- lapply(resl_msm_v_ssm, function(i) i$res) %>% 
   purrr::reduce(., full_join, by='ens') %>% 
-  mutate("symbol"=ens2sym_ids[ens]) %>%
+  mutate("symbol"=gm$ENSEMBL$SYMBOL[ens]) %>%
   relocate(ens, symbol)
 resl[['Celltype']] <- c(lapply(resl_msm_v_ssm, function(i) i$res),
                         list("res"=res_msm_ssm))
@@ -752,6 +748,8 @@ dev.off()
 
 #############################################
 #### 3.b) Volcano Plots for Andreas Data ####
+old_data <- 'data_old/Sara_DC_R15_Raw.csv'
+old_data <- 'data_old/Sara_DC_R9_Raw.csv'
 old_data <- old_rdc_data
 
 lfc_lim <- 2
@@ -793,6 +791,7 @@ melt(odat) %>% head
 ######################################
 #### 4. GSEA analysis of the DEGs ####
 res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
+
 # genes_to_include <- read.table(file.path(pdir, "..", "ref", "msm_ssm_gsea_genes", "msm_ssm.txt"),
 #                                header = F, check.names = F) %>%
 #   filter(!duplicated(V1))
@@ -807,11 +806,12 @@ msig_lvls <- list('H'=list(NULL),                       # hallmark gene sets
 
 gseas_all <- lapply(setNames(c('rDC', 'mDC'), c('rDC', 'mDC')), function(res_id){
   # get LFC table
+  print(res_id)
   res <- lfc_df <- res_dds[[res_id]]$res 
   # if(filter_genes) res <- res %>% filter(ens %in% genes_to_include$V1)
   
   lfc_df <- res %>% 
-    filter(baseMean.interaction > min_baseMean) %>% 
+    filter(baseMean.interaction > min_baseMean) %>%
     dplyr::select(grep("ens|log2FoldChange", colnames(.), value=T)) %>%
     tibble::column_to_rownames(., "ens") #%>% 
     #select(grep("interaction", colnames(.), value=T))
@@ -820,7 +820,7 @@ gseas_all <- lapply(setNames(c('rDC', 'mDC'), c('rDC', 'mDC')), function(res_id)
   gseas <- apply(lfc_df, 2, function(lfc_v){
     print("...")
     lfc_v <- setNames(lfc_v,
-                      ens2entrez_ids[rownames(lfc_df)])
+                      gm$ENSEMBL$ENTREZ[rownames(lfc_df)])
     
     iterateMsigdb(species='Mus musculus', msig_lvls=msig_lvls, 
                   fun=gseaFun, lfc_v=lfc_v)
@@ -877,7 +877,7 @@ for(id in names(gsea_dcs)){
 }
 
 ## Visualize the GSEA results UNTESTED IN [rm]DC DATA
-gg_gseas <- lapply(grp_gsea_tbls_merge, function(gsea_tbls_merge){
+gg_gseas <- lapply(gsea_dcs, function(gsea_tbls_merge){
   
   melt_gsea <- gsea_tbls_merge %>% 
     select(ID, grep("^NES", colnames(.), value=T), celltype, geneset) %>%

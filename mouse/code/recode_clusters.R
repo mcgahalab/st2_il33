@@ -10,6 +10,26 @@ recode_list <- function(seu, newcol, grp=NULL, ...){
   return(seu)
 }
 
+# Relabel the orig.ident column
+.relabelid <- function(x){
+  if(any(grepl("Tumor", x))){
+    x %>% 
+      gsub("72h", "3d", .) %>%
+      gsub("^Tumor", "B1_Tumor", .) %>%
+      gsub("^LN", "B1_LN", .) %>%
+      gsub("^ST2", "B2", .) %>%
+      gsub("^CD45", "B2_CD45", .) %>%
+      gsub("PBS$", "Un", .)
+  } else {
+    x %>% 
+      gsub("72h", "3d", .) %>%
+      gsub("^LN", "B1_LN", .) %>%
+      gsub("^ST2", "B2", .) %>%
+      gsub("^CD45", "B2_CD45", .) %>%
+      gsub("PBS$", "Un", .)
+  }
+}
+
 # Updated [Apr 24-2023] to annotate clusters and annotations
 recode_map <- function(x, grp=NULL, anno=TRUE){
   if(grepl('^ln$', grp, ignore.case = T)){
@@ -98,8 +118,20 @@ recode_map <- function(x, grp=NULL, anno=TRUE){
 cd45_recode_map <- function(x, grp=NULL, anno=TRUE){
   if(grepl('^ln$', grp, ignore.case = T)){
     x %>% 
-      recode("0"=ifelse(anno, '', ""),
-             '9'=ifelse(anno, '', ""))
+      recode("24"=ifelse(anno, 'DC', "0"),
+             "20"=ifelse(anno, 'Monocyte_derived_macrophages', "1"),
+             "27"=ifelse(anno, 'Monocyte_derived_macrophages', "1"),
+             "11"=ifelse(anno, 'B', "2"),
+             "31"=ifelse(anno, 'B', "2"),
+             "1"=ifelse(anno, 'B', "3"),
+             "23"=ifelse(anno, 'B', "3"),
+             "13"=ifelse(anno, 'B', "3"),
+             "0"=ifelse(anno, 'B', "3"),
+             "7"=ifelse(anno, 'B', "3"),
+             "28"=ifelse(anno, 'B', "3"),
+             "10"=ifelse(anno, 'B', "4"),
+             "9"=ifelse(anno, 'B', "4"),
+             "6"=ifelse(anno, 'Remove', "-1"))
   } else if(grepl('^tumor$', grp, ignore.case = T)){
     x %>% 
       recode("0"=ifelse(anno, 'NK', "0"),
@@ -116,8 +148,8 @@ cd45_recode_map <- function(x, grp=NULL, anno=TRUE){
              '11'=ifelse(anno, 'CD8', "1"),
              '12'=ifelse(anno, 'Tgd', "12"),
              '13'=ifelse(anno, 'CD8_proliferating', "13"),
-             '14'=ifelse(anno, 'DC', "14"),
-             '15'=ifelse(anno, 'Unknown', "15"),
+             '14'=ifelse(anno, 'DC_Cd4pos_Cd8pos', "14"),
+             '15'=ifelse(anno, 'ILC3', "15"),
              '16'=ifelse(anno, 'NK', "0"),
              '17'=ifelse(anno, 'Treg', "17"),
              '18'=ifelse(anno, 'CD8', "1"),
@@ -126,7 +158,7 @@ cd45_recode_map <- function(x, grp=NULL, anno=TRUE){
              '21'=ifelse(anno, 'DC', "21"),
              '22'=ifelse(anno, 'NK_proliferating', "22"),
              '23'=ifelse(anno, 'B', "23"),
-             '24'=ifelse(anno, 'Unknown', "24"),
+             '24'=ifelse(anno, 'CD3_DN_Naive', "24"),
              '25'=ifelse(anno, 'Macrophage', "25"),
              '26'=ifelse(anno, 'Monocyte', "26"))
   } 
@@ -200,35 +232,58 @@ tcell_recode_map <- function(x, grp=NULL, day=NULL, anno=TRUE){
 cd45_tcell_recode_map <- function(x, grp=NULL, day=NULL, anno=TRUE){
   if(grepl('^ln$', grp, ignore.case = T)){
     x %>% 
-      recode("9"=ifelse(anno, 'CD4_naive', "0"),
-             "7"=ifelse(anno, 'CD8_naive', "1"),
-             "20"=ifelse(anno, 'CD4_CCR7pos_TCF7pos', "2"),
-             "3"=ifelse(anno, 'CD4_CCR7pos_TCF7pos', "2"),
-             "4"=ifelse(anno, 'CD4_CCR7pos_TCF7pos', "2"),
-             "2"=ifelse(anno, 'CD4_CCR7pos_TCF7pos', "2"),
-             "19"=ifelse(anno, 'CD4_CCR7pos_TCF7pos', "2"),
-             "23"=ifelse(anno, 'CD4_CCR7pos_TCF7pos', "2"),
+      recode("9"=ifelse(anno, 'Remove', "-1"),
+             "7"=ifelse(anno, 'Remove', "-1"),
+             "20"=ifelse(anno, 'CD4_intermediate_TCF7pos_CCR7pos_TCF7pos_002', "2"),
+             "3"=ifelse(anno, 'CD4_intermediate_TCF7pos_CCR7pos_TCF7pos_002', "2"),
+             "4"=ifelse(anno, 'CD4_intermediate_TCF7pos_CCR7pos_TCF7pos_002', "2"),
+             "2"=ifelse(anno, 'CD4_intermediate_TCF7pos_CCR7pos_TCF7pos_002', "2"),
+             "19"=ifelse(anno, 'CD4_intermediate_TCF7pos_CCR7pos_TCF7pos_002', "2"),
+             "23"=ifelse(anno, 'CD4_intermediate_TCF7pos_CCR7pos_TCF7pos_002', "2"),
              "17"=ifelse(anno, 'CD8_memory', "3"),
              "14"=ifelse(anno, 'CD8_memory', "3"),
              "13"=ifelse(anno, 'CD8_memory', "3"),
-             "24"=ifelse(anno, 'CD8_memory', "3"))
+             "24"=ifelse(anno, 'CD8_memory', "3"),
+             '0'=ifelse(anno, 'CD8_naive_memory', "4"),
+             '6'=ifelse(anno, 'CD8_naive_memory', "4"),
+             '1'=ifelse(anno, 'CD8_naive_memory', "4"),
+             '5'=ifelse(anno, 'CD8_naive_memory', "4"),
+             '12'=ifelse(anno, 'CD4_naive', "5"),
+             '16'=ifelse(anno, 'CD4_naive', "5"),
+             '10'=ifelse(anno, 'CD8_naive', "6"),
+             '21'=ifelse(anno, 'Remove', "-1"),
+             '22'=ifelse(anno, 'Remove', "-1"),
+             '25'=ifelse(anno, 'Remove', "-1"),
+             '8'=ifelse(anno, 'TReg', "-2"),
+             '11'=ifelse(anno, 'TReg', "-2"),
+             '15'=ifelse(anno, 'TReg', "-2"),
+             '18'=ifelse(anno, 'TReg', "-2"))
   } else if(grepl('^tumor$', grp, ignore.case = T)){
     x %>% 
-      recode("4"=ifelse(anno, 'CD3_DN', "0"),
-             "16"=ifelse(anno, 'CD4_CCR7pos_TCF7pos', "1"),
-             "5"=ifelse(anno, 'CD4_CCR7pos_TCF7pos', "1"),
+      recode("4"=ifelse(anno, 'CD3_DN_activated', "0"),
+             "16"=ifelse(anno, 'CD4_intermediate_TCF7pos_CCR7pos_TCF7pos_001', "1"),
+             "5"=ifelse(anno, 'CD4_intermediate_TCF7pos_CCR7pos_TCF7pos_001', "1"),
              "11"=ifelse(anno, 'CD8_effector_cycling', "2"),
-             "7"=ifelse(anno, 'CD8_effector_cycling', "2"),
-             "28"=ifelse(anno, 'CD8_effector_cycling', "2"),
+             "17"=ifelse(anno, 'CD8_effector_cycling', "2"),
+             "20"=ifelse(anno, 'CD8_effector_cycling', "2"),
              "8"=ifelse(anno, 'CD8_effector', "3"),
              "3"=ifelse(anno, 'CD8_effector', "3"),
              "2"=ifelse(anno, 'CD8_effector', "3"),
              "10"=ifelse(anno, 'CD8_memory_precursor_effector', "4"),
-             "17"=ifelse(anno, 'CD8_memory_precursor_effector', "4"),
+             "7"=ifelse(anno, 'CD8_memory_precursor_effector', "4"),
              "14"=ifelse(anno, 'CD8_memory_precursor_effector', "4"),
+             "13"=ifelse(anno, 'CD8_memory', "5"),
              "6"=ifelse(anno, 'CD8_memory', "5"),
              "1"=ifelse(anno, 'CD8_memory', "5"),
-             "22"=ifelse(anno, 'CD8_memory', "5"))
+             "22"=ifelse(anno, 'CD8_memory', "5"),
+             "15"=ifelse(anno, 'CD8_memory2', "6"),
+             "9"=ifelse(anno, 'CD8_memory2', "6"),
+             "21"=ifelse(anno, 'TReg', "-2"),
+             "12"=ifelse(anno, 'TReg', "-2"),
+             "0"=ifelse(anno, 'TReg', "-2"),
+             "19"=ifelse(anno, 'TReg', "-2"),
+             "18"=ifelse(anno, 'TReg', "-2"),
+             )
   }
 }
 
