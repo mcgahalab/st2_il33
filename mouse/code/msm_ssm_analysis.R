@@ -64,7 +64,6 @@ celltypes <- setNames(celltypes,celltypes)
 
 #######################
 #### Functions Git ####
-source("~/git/mini_projects/mini_functions/wgcnaComplexHeatmap.R")
 source("~/git/mini_projects/mini_functions/iterateMsigdb.R")
 source("~/git/mini_projects/mini_functions/linearModelEigen.R")
 source("~/git/mini_projects/mini_functions/geneMap.R")
@@ -430,6 +429,9 @@ saveRDS(coldata, file=file.path(outdir, "rds", "coldata.rds"))
 
 
 ### DEMO: Explaining how to read the results from the DEG
+resl <- readRDS(file=file.path(outdir, "rds", "resl.rds"))
+coldata <- readRDS(file=file.path(outdir, "rds", "coldata.rds"))
+
 do_demo <- FALSE
 if(do_demo){
   gene <- rownames(resl$MSM$res)[1]
@@ -734,7 +736,7 @@ res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
 gois <- readRDS(file.path(outdir, "goi.rds"))
 genes_to_include <- read.table(file.path(pdir, "..", "ref", "msm_ssm_gsea_genes", "msm_ssm.txt"),
                                header = F, check.names = F) %>%
-  filter(!duplicated(V1))
+  dplyr::filter(!duplicated(V1))
 filter_genes <- FALSE
 
 msig_lvls <- list('H'=list(NULL),                       # hallmark gene sets
@@ -976,7 +978,12 @@ res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
 coldata <- readRDS(file=file.path(outdir, "rds", "coldata.rds"))
 dir.create(file.path(outdir, "regulon"), showWarnings = F)
 
+# dir.create("SCENIC_msm_tdln", recursive = F, showWarnings = F)
+setwd(file.path(pdir, "SCENIC_msm_tdln"))
+
 dds <- res_dds$All$dds_lnBase
+data(list="motifAnnotations_mgi_v9", package="RcisTarget")
+motifAnnotations_mgi <- motifAnnotations_mgi_v9
 scenicOptions <- initializeScenic(org=scenic_org_code, 
                                   dbDir=dirname(rcis_db), dbs=basename(rcis_db), 
                                   datasetTitle='msm_ssm', nCores=10) 
@@ -985,26 +992,269 @@ scenicOptions@settings$defaultTsne <- list("perpl"=3,
                                            "aucType"="AUC")
 
 # Pre-filtering of the gene expression matrix
-exprMat <- assay(dds)[which(!is.na(ens2sym_ids[rownames(dds)])),]
+samples <- as.data.frame(colData(dds)) %>%
+  dplyr::filter(celltype == 'MSM',
+                lnstatus == 'TDLN') %>%
+  rownames
+
+exprMat <- assay(dds)[which(!is.na(ens2sym_ids[rownames(dds)])),samples]
 rownames(exprMat) <- ens2sym_ids[rownames(exprMat)] 
 exprMat <- exprMat[which(!duplicated(rownames(exprMat))),]
 genesKept <- geneFiltering(exprMat, scenicOptions,
                            minCountsPerGene=10,
-                           minSamples=15)
+                           minSamples=3)
 exprMat_filtered <- exprMat[genesKept, ]
 
 # GENIE3 and SCENIC analysis wrapper
 if(!file.exists(file.path("int", "3.4_regulonAUC.Rds"))){
-  runCorrelation(exprMat_filtered, scenicOptions)
-  exprMat_filtered_log <- log2(exprMat_filtered+1) 
+  runCorrelation(tpmx_filtered, scenicOptions)
+  exprMat_filtered_log <- log2(tpmx_filtered+1) 
   runGenie3(exprMat_filtered_log, scenicOptions)
   
   scenicOptions <- runSCENIC_1_coexNetwork2modules(scenicOptions)
   scenicOptions <- runSCENIC_2_createRegulons(scenicOptions) #, coexMethod=c("top5perTarget")) #** Only for toy run!!
-  scenicOptions <- runSCENIC_3_scoreCells(scenicOptions, exprMat_filtered)
+  scenicOptions <- runSCENIC_3_scoreCells(scenicOptions, tpmx_filtered)
   scenicOptions <- runSCENIC_4_aucell_binarize(scenicOptions)
 }
-
+{
+  # Aug 15 test
+  # dir.create("SCENIC_msm_ln", recursive = F, showWarnings = F)
+  setwd(file.path(pdir, "SCENIC_msm_tdln"))
+  ilfamily <- list(
+    IL1 = c("Il1a", "Il1b", "Il1rn"),
+    IL2 = c("Il2", "Il4", "Il5", "Il9", "Il13", "Il15"),
+    IL6 = c("Il6", "Il11", "Il27", "Il31", "Il33", "Il35", "Il36a", "Il36b", "Il36g"),
+    IL10 = c("Il10", "Il19", "Il20", "Il22", "Il24", "Il26"),
+    IL17 = c("Il17a", "Il17b", "Il17c", "Il17d", "Il17f"),
+    Other = c("Il3", "Il7", "Cxcl8", "Il12a", "Il12b", "Il14", "Il16", "Il18", "Il34")
+  )  
+  
+  data_groups <- c('msm_tdln'='SCENIC_msm_tdln', 'msm_ln'='SCENIC_msm_ln')
+  tf_grps <- lapply(data_groups, function(grp){
+    setwd(file.path(pdir, grp))
+    
+    ## 0. Set up the SCENIC env
+    data(list="motifAnnotations_mgi_v9", package="RcisTarget")
+    motifAnnotations_mgi <- motifAnnotations_mgi_v9
+    scenicOptions <- initializeScenic(org=scenic_org_code, 
+                                      dbDir=dirname(rcis_db), dbs=basename(rcis_db), 
+                                      datasetTitle='msm_ssm', nCores=10) 
+    scenicOptions@settings$defaultTsne <- list("perpl"=3,
+                                               "dims"=30,
+                                               "aucType"="AUC")
+    
+    # Pre-filtering of the gene expression matrix
+    samples <- as.data.frame(colData(dds)) %>%
+      dplyr::filter(celltype == 'MSM',
+                    lnstatus == 'TDLN') %>%
+      rownames
+    
+    motifAnnot <- getDbAnnotations(scenicOptions) # Motif annotations
+    allTFs=getDbTfs(scenicOptions) # all TFs
+    rnkName = getDatabases(scenicOptions)
+    il33_ranks <- importRankings(rnkName, columns='Il33')
+    motifs_AUC <- loadInt(scenicOptions, 'motifs_AUC')
+    
+    ## 1) Load in the correlation matrix and extra cytokine links
+    # corrMat <- loadInt(scenicOptions, 'corrMat')
+    
+    ## 2.a) Get the GENIE3 TF-modules that have IL33 within it:
+    linkList <- loadInt(scenicOptions, "genie3ll")
+    il33 <- linkList[grep("Il33", linkList$Target,ignore.case=T),] %>%  arrange(weight)
+    ils_ll <- lapply(unlist(ilfamily), function(i){
+      linkList[grep(paste0("^", i, "$"), linkList$Target,ignore.case=T),] %>% 
+        dplyr::select(-Target) %>%
+        magrittr::set_colnames(., c('TF', i))
+    }) %>%
+      purrr::reduce(full_join, by='TF') %>%
+      tibble::column_to_rownames(., "TF")
+    il33_vs_ilf <- apply(ils_ll, 1, function(i){
+      ecdf(i)(i['Il33'])
+    }) %>% sort
+    
+    ## 2.b) Load in the list of TF-modules and their genes that meet the cutoff for high correlation
+    ## However, not all of these TFs have a matching motif that is found in Il33 promoter region
+    tfModules_forEnrichment <- loadInt(scenicOptions, 'tfModules_forEnrichment')
+    motifEnrichment_full <-  loadInt(scenicOptions, 'motifEnrichment_full')
+    il33_all_ids <- names(which(sapply(tfModules_forEnrichment, function(i) any(grepl("Il33", i)))))
+    il33_ids <- list("top"=grep(pattern="top.*Target", il33_all_ids, value = T),
+                     "corr"=grep(pattern="w0", il33_all_ids, value = T))
+    
+    ## 3. For each of those modules, check if any of them are defined by a motif
+    motifEnrichment<- loadInt(scenicOptions, 'motifEnrichment_full')
+    TFs <- motifEnrichment %>% 
+      dplyr::filter(geneSet %in% c(il33_ids$top)) %>% 
+      dplyr::filter(TFinDB == '**') 
+    TF_wMotifs <- unique(TFs$geneSet) # unique(gsub("_.*", "", TFs$geneSet))
+    TF_wMotifs_genes <- unique(gsub("_.*", "", TFs$geneSet))
+    
+    ## 4. Cross check the significant TF_wMotifs and see if they contain Il33 or if they regulate
+    ## TFs that do conatin Il33 (from section 2.b)
+    onedeg_il33_ids <- sapply(TF_wMotifs_genes, function(gene_j){
+      sapply(tfModules_forEnrichment[il33_ids$top], function(i) {
+        gene_j %in% i
+      })
+    })
+    onedeg_il33_tfs <- apply(onedeg_il33_ids, 2, function(i){
+      setNames(gsub("_.*", "", names(which(i))),
+               names(which(i))) %>% 
+        sort %>% list
+    }) %>% unlist(., recursive=F)
+    onedeg_il33_genes <- lapply(onedeg_il33_tfs, function(i) {
+      tfModules_forEnrichment[names(i)]
+    })
+    
+    ## 5. Extract AUC rankings to be used for downstream calcAUC
+    aucellRankings <- loadInt(scenicOptions, "aucell_rankings")
+    
+    return(list("TF"=onedeg_il33_tfs,
+                "Genes"=onedeg_il33_genes,
+                'Il33_vAll'=il33_vs_ilf,
+                "aucellRankings"=aucellRankings))
+  })
+  
+  
+  ## ResA] Find Il33-linked TFs that are matched between TDLN and LN,
+  ## and compare Il33 weights to all other IL-family weights
+  tf_join <- full_join(tibble::rownames_to_column(as.data.frame(tf_grps$msm_tdln$Il33_vAll), "TF"),
+            tibble::rownames_to_column(as.data.frame(tf_grps$msm_ln$Il33_vAll), "TF"),
+            by='TF') %>%
+    magrittr::set_colnames(., c('Tf', 'TDLN', 'LN')) %>%
+    tibble::column_to_rownames(., 'Tf')
+  tf_join0 <- tf_join[which(rowSums(is.na(tf_join)) == 0),] %>%
+    round(., 2) %>% 
+    arrange(TDLN, desc(LN))
+  
+  
+  ## ResB] Isolate for TFs that are supported by motifs and top targets for
+  ## the TDLN and LN, within 1 degree of separation
+  ## Then trim down the joined Il33-linked TFs based on this list
+  sig_tf_motifs <- rbind(reshape2::melt(tf_grps$msm_tdln$TF) %>%
+                           mutate("group"="TDLN"),
+                         reshape2::melt(tf_grps$msm_ln$TF) %>% 
+                           mutate("group"="LN")) %>%
+    magrittr::set_colnames(c("tf_corr", "tf_motif", "group"))
+  sig_tf_motifs_df <- tf_join[sig_tf_motifs[,1],] %>%
+    cbind(sig_tf_motifs[,c(3:1)], .) %>%
+    mutate("link"=ifelse(tf_motif == tf_corr, "primary", "1_deg"),
+           "id"=ifelse(link=='primary', tf_motif, paste0(tf_motif, " > ", tf_corr))) %>%
+    unique %>% 
+    arrange(desc(group), tf_motif, desc(link), desc(TDLN))
+  .names2ypos <- function(namesdf){
+    # namesdf <- sig_tf_motifs_df[,c('tf_motif', 'tf_corr')]
+    namesdf[,1] <- factor(namesdf[,1], levels=unique(namesdf[,1]))
+    ypos1 <- as.integer(namesdf[,1])
+    namesl <- split(namesdf, namesdf[,1]) 
+    ypos <- 0
+    for(ni in seq_along(namesl)){
+      i <- namesl[[ni]]
+      ypos <- c(ypos,
+                c(max(ypos)+2, (seq(nrow(i)-1) + max(ypos) + 1)))
+    }
+    return(cbind(namesdf, "ypos"=(ypos[-1] - 1)))
+  }
+  sig_tf_motifs_df <- cbind(sig_tf_motifs_df,
+                            'ypos'=.names2ypos(sig_tf_motifs_df[,c('tf_motif', 'tf_corr')])$ypos)
+  sig_tf_motifs_df$xpos <- as.integer(factor(sig_tf_motifs_df$link,
+                                             levels=c('primary', '1_deg')))
+  sig_tf_motifs_df$xpos <- sig_tf_motifs_df$xpos / (2*max(sig_tf_motifs_df$xpos))
+  sig_tf_motifs_df$ypos <- sig_tf_motifs_df$ypos / max(sig_tf_motifs_df$ypos)
+  
+  sig_tf_motifs_df <- split(sig_tf_motifs_df, sig_tf_motifs_df$tf_motif) %>%
+    lapply(., function(i) {
+      i$xpos0 <- i$xpos[1]
+      i$ypos0 <-  i$ypos[1]
+      return(i)
+      }) %>% do.call(rbind, .)
+  
+  X <- melt(sig_tf_motifs_df, measure.vars=c('TDLN', 'LN'))  %>%
+    mutate(id = factor(as.character(id), levels=unique(id)),
+           blank=1-value)
+  
+  
+  
+  library(scatterpie)
+  p <- ggplot(X, aes(x=xpos, y=ypos, label=tf_corr)) +
+    geom_segment(aes(x=xpos0, y=ypos0, xend=xpos, yend=ypos)) +
+    scatterpie::geom_scatterpie(data=X, aes(x=xpos, y=ypos), 
+                                cols=c('value', 'blank'), pie_scale=2.5) +
+    geom_text(data=dplyr::filter(X, link=='1_deg'),
+              nudge_x=0.03, nudge_y=0, hjust=0, vjust=0) +
+    geom_text(data=dplyr::filter(X, link=='primary'),
+              nudge_x=-0.03, nudge_y=0, hjust=1, vjust=0) +
+    coord_equal() +
+    scale_fill_manual(values=c('value'='black', 'blank'='white')) +
+    xlim(0, 1.0) +
+    facet_grid(variable ~ ., switch = "y") +
+    cowplot::theme_cowplot() +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks=element_blank(),
+          legend.position = 'none',
+          axis.line = element_blank())
+  pdf("~/xfer/y.pdf", height = 15)
+  p
+  p1
+  dev.off()
+  
+  ## ResC] Run AUC using all the genesets from both datasets (TDLN and LN)
+  ## 5. Use the extended list of TFs from section 4 to check how Cis scores
+  ## compare to PBS score
+  library(AUCell)
+  gene_list <- lapply(tf_grps, function(i) i$Genes) %>%
+    unlist(., recursive=F)
+  for(id in names(tf_grps)){
+    aucellRankings <- tf_grps[[id]]$aucellRankings
+    set.seed(1234)
+    regulonAUC <- AUCell_calcAUC(unlist(gene_list, recursive=F), 
+                                 aucellRankings, 
+                                 aucMaxRank=aucellRankings@nGenesDetected["1%"], 
+                                 nCores=1) 
+    tf_grps[[id]]$regulon_auc <- assay(regulonAUC)
+  }
+  
+  ## ResD] Finally, For each of the tf_motifs in ResB, generate the boxplot
+  ## comparisons between Cis and PBS treated samples
+  regulon_auc_df <- lapply(c("tdln", "ln") %>% setNames(.,.), function(grp){
+    df <- tf_grps[[paste0("msm_", grp)]]$regulon_auc %>%
+      as.data.frame
+    cpidx <- grepl("Cis", colnames(df), ignore.case = T)
+    
+    apply(df, 1, function(row_i){
+      X <- effsize::cohen.d(row_i[which(cpidx)], row_i[which(!cpidx)])
+      c('estimate'=X$estimate, X$conf.int)
+    }) %>% t %>% as.data.frame %>%
+      mutate(group=toupper(grp),
+             geneset_group=gsub("^(.*?)\\..*", "\\1", rownames(.)),
+             # tf_motif=gsub("\\..*", "", rownames(.)),
+             tf_corr=gsub("(.*)_.*", "\\1", rownames(.)) %>% 
+               gsub("^.*\\.", "", .)) %>%
+      tibble::remove_rownames() %>%
+      dplyr::filter(!duplicated(tf_corr))
+  }) %>% do.call(rbind, .) %>%
+    arrange(desc(geneset_group)) %>%
+    mutate(tf_corr = factor(as.character(tf_corr), levels=unique(tf_corr)),
+           group = factor(as.character(group), levels=c('TDLN', 'LN')))
+  
+  p <- ggplot(regulon_auc_df, aes(y=tf_corr, x=estimate, fill=geneset_group)) +
+    geom_bar(stat="identity", position=position_dodge()) +
+    geom_errorbar(aes(xmin=lower, xmax=upper), width=.2,
+                  position=position_dodge(.9)) +
+    facet_grid(group ~ ., space='free', scales='free') +
+    cowplot::theme_cowplot() +
+    xlim(-140, 140) +
+    geom_vline(xintercept = 0, linetype='dashed') +
+    ylab("TF_module") + xlab("Cohen's D (AUC)") +
+    theme(axis.text.x.bottom = element_text(angle = 90, hjust=1, vjust=1))
+  
+  pdf("~/xfer/x.pdf", height=12, width = 4)
+  p
+  dev.off()
+  
+  
+  
+  
+}
 # Read in Regulon information
 regulonAUC <- loadInt(scenicOptions, "aucell_regulonAUC")
 regulon_genesets <- readRDS("int/2.6_regulons_asGeneSet.Rds")
@@ -1210,6 +1460,136 @@ lapply(rssPlots, function(i) i$plot$plot)
 dev.off()
 
 
+###################
+#### 7) ssGSEA ####
+## Initialize
+res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
+coldata <- readRDS(file=file.path(outdir, "rds", "coldata.rds"))
+tpm <- read.table(file.path(outdir, "..", "counts", "all_tpm.tsv"), header=TRUE,
+                  row.names="gene", check.names=FALSE, stringsAsFactors = F)
+dir.create(file.path(outdir, "ssgsea"), showWarnings = F)
+setwd(file.path(outdir, "ssgsea"))
+# dir.create("SCENIC_msm_ln", recursive = F, showWarnings = F)
+
+
+dds <- res_dds$All$dds_lnBase
+data(list="motifAnnotations_mgi_v9", package="RcisTarget")
+motifAnnotations_mgi <- motifAnnotations_mgi_v9
+scenicOptions <- initializeScenic(org=scenic_org_code, 
+                                  dbDir=dirname(rcis_db), dbs=basename(rcis_db), 
+                                  datasetTitle='msm_ssm', nCores=10) 
+scenicOptions@settings$defaultTsne <- list("perpl"=3,
+                                           "dims"=30,
+                                           "aucType"="AUC")
+
+# Pre-filtering of the gene expression matrix
+samples_df <- as.data.frame(colData(dds)) %>%
+  dplyr::filter(celltype == 'MSM') 
+samples <- rownames(samples_df)
+samplel <- split(samples, f=samples_df$condition)
+  #               lnstatus == 'TDLN') %>%
+  # rownames
+
+exprMat <- assay(dds)[which(!is.na(gm$ENSEMBL$SYMBOL[rownames(dds)])),samples]
+rownames(exprMat) <- gm$ENSEMBL$SYMBOL[rownames(exprMat)] 
+exprMat <- exprMat[which(!duplicated(rownames(exprMat))),]
+genesKept <- geneFiltering(exprMat, scenicOptions,
+                           minCountsPerGene=10,
+                           minSamples=3)
+exprMat_filtered <- exprMat[genesKept, ]
+
+tpmx <- tpm[which(!is.na(gm$ENSEMBL$SYMBOL[rownames(tpm)])),samples,]
+tpmx <- tpmx[which(!duplicated(gm$ENSEMBL$SYMBOL[rownames(tpmx)])),]
+rownames(tpmx) <- gm$ENSEMBL$SYMBOL[rownames(tpmx)] 
+tpmx_filtered <- as.matrix(tpmx[genesKept,])
+
+
+msig_lvls <- list('H'=list(NULL),                       # hallmark gene sets
+                  'C2'=list('CP:REACTOME'))#              # curated gene sets
+# 'C5'=list('GO:BP', 'GO:CC', 'GO:MF'))#, # ontology gene sets
+# 'C7'=list('IMMUNESIGDB'))             # immunologic signature gene sets
+# 'C8'=list(NULL),                      # cell type signature gene sets
+# 'custom'=list('custom'=gois))           # custom genesetsmsig_ds <- msigdbr(species = species, category = mlvl, subcategory = sublvl) %>%
+mlvl <- 'C2'
+sublvl <- "CP:REACTOME"
+sub_obj <- lapply(msig_lvls[[mlvl]], function(sublvl){
+  msig_ds <- msigdbr(species = 'Mus musculus', category = mlvl, subcategory = sublvl) %>%
+    dplyr::select(gs_name, gene_symbol) %>%
+    as.data.frame()
+  
+  library(AUCell)
+  cells_rankings <- AUCell::AUCell_buildRankings(exprMat_filtered, plotStats=FALSE)
+  gene_list <- split(msig_ds$gene_symbol, msig_ds$gs_name)
+  # gene_list <- gene_list[grep("(TLR9|STAT[0-9]|NFKB)", gsub("_", "", names(gene_list)))]
+  set.seed(1234)
+  genesetAUC <- AUCell::AUCell_calcAUC(gene_list, 
+                                       cells_rankings, 
+                                       # aucMaxRank=aucellRankings@nGenesDetected["1%"], 
+                                       nCores=1) 
+  ssgseaparam <- GSVA::ssgseaParam(tpmx_filtered, gene_list)
+  ssgsea_dat_tpm<- GSVA::gsva(ssgseaparam)
+  # X <- ssgsea_dat_tpm[order(apply(ssgsea_dat_tpm,1,median), decreasing = T),]
+  
+  df <- as.data.frame(assay(genesetAUC))
+  Y <- df[order(apply(df, 1, median), decreasing = T),]
+  top5perc <- ceiling(nrow(Y) * 0.05)
+  
+  pattern <- "(TLR|STAT[0-9]|NFKB|IRF|Jun|AP1)"
+  ids <- setNames(grep(pattern, gsub("_", "", rownames(Y))),
+                  rownames(Y)[grep(pattern, gsub("_", "", rownames(Y)))])
+  ids <- ids[which(ids < top5perc)]
+  
+  .allbyall <- function(X, fun, ...){
+    lapply(X, function(i) {
+      lapply(X, function(j){
+        fun(i,j, ...)
+      }) %>% do.call(rbind, .) %>%
+        as.data.frame %>%
+        tibble::rownames_to_column(., "Alt") 
+    }) %>%
+      do.call(rbind, .) %>%
+      mutate(Ref=as.character(sapply(names(X), rep, times=length(X)))) %>%
+      dplyr::relocate(., "Ref") %>% 
+      arrange(p)
+  }
+  .diff <- function(i,j,row_i){
+    X <- effsize::cohen.d(row_i[i], row_i[j])
+    p <- tryCatch({t.test(row_i[i], row_i[j])$p.value}, error=function(e){NA})
+    c('estimate'=X$estimate, X$conf.int, 'p'=p)
+  }
+  
+  # df <- as.data.frame(ssgsea_dat_tpm)
+  geneset_auc_df <- apply(df, 1, function(row_i){
+    .allbyall(samplel, .diff, row_i=row_i)
+  }) 
+  gsselect_auc_df <- do.call(rbind, geneset_auc_df[names(ids)]) %>%
+    as.data.frame %>%
+    tibble::rownames_to_column(., 'geneset') %>%
+    dplyr::mutate(geneset=gsub("\\..*", "", geneset)) %>%
+    dplyr::filter(Ref == 'TDLN-CIS_MSM' & 
+                    (Alt == 'LN-CIS_MSM' | Alt == 'TDLN-PBS_MSM'))
+  
+  pdf("~/xfer/x.pdf", width = 10)
+  gsselect_auc_df %>% 
+    dplyr::mutate(geneset = gsub("REACTOME_", "", geneset) %>%
+                    gsub("_", " ", .)) %>%
+    ggplot(aes(y= geneset, x = estimate, fill = Alt)) + 
+    geom_bar(stat="identity", alpha=0.5, 
+             position=position_dodge()) +
+    geom_errorbar(aes(xmin=lower, xmax=upper), width=.2, colour="orange", 
+                  position=position_dodge(.9)) +
+    xlab("Cohen's D") + ylab("") + 
+    cowplot::theme_cowplot() +
+    ggtitle("TDLN-CIS_MSM vs ...")
+  dev.off()
+  # %>% t %>% as.data.frame %>%
+  #   mutate(geneset_group=gsub("^REACTOME_", "", rownames(.))) %>%
+  #   tibble::remove_rownames() %>%
+  #   arrange(p)
+  return(geneset_auc_df)
+})
+
+
 ######################################
 #### 7) Pairing Regulons with DEG ####
 ## Initialize
@@ -1295,38 +1675,15 @@ for(celltype in celltypes){
 
 ###########################
 #### 8) Final Figures: ####
-#--- Fig1.a: Heatmap for MSM and SSM ----
+#--- June 3 2024 - Fig1.F: Heatmap for MSM and SSM ----
 order_type <- 'alphabetical'
 merge_replicates <- FALSE
 
 dir.create(file.path(outdir, "final_figures"), showWarnings = F)
-goi <- c('Ahr','Ahrr','Arg1','Arg2','Get3','Asns','Atg10','Atg12','Atg16l1',
-         'Atg3','Atg5','Atg7','Becn1','Ccr7','Ddit3','Cyp1a1','Cyp1b1',
-         'Ppp1r15a','Gadd45b','Gcn1','Hif1a','Il10','Il12a',
-         'Il1b','Il6','Mmp9','Nbr1','Sqstm1','Slc38a2',
-         'Ido1','Ido2', 'Nos2') #, is too low expressed
-goi <- c('Il10',  'Il2ra', 'Il2rb', 'Il5', 'Il6', 'Il12a', 'Il12b', 'Il17a',
-         'Il17f', 'Il18', 'Ccr2', 'Ccl22', 'Ccl2', 'Ccl3', 'Ccl4', 'Ccl5',
-         'Ccl11', 'Cxcl1', 'Cxcl2',  'Cxcl9',  'Cxcl10', 'Cxcl11',
-         'Ido1', 'Ido2', 'Ahr', 'Cyp1a1', 'Cyp1b1', 'Asns', 'Ddit3')
-goi <- c('Il10',  'Cd274', 'Pdcd1lg2', 'Tgfb3', 'Ccl22', 
-         'Cxcl9', 'Il1rn', 'Ido1', 'Ido2', 'Cyp1a1', 'Cyp1b1', 'Ahr', 'Ddit3',
-         'Il6', 'Il1b', 'Ccr2', 'Il17f', 'Il17a', 'Cd80', 'Tnfsf4', 'Ccl3', 
-         'Ccl4', 'Cxcl2','Il2ra', 'Il2rb', 'Ccl2', 'Cxcl10', 'Cxcl1', 
-         'Tnfsf18', 'Icosl') # Tracy list
-goi <- c('Il10', 'Cd274', 'Pdcd1lg2', 'Tgfb3', 'Ccl17', 'Mrc1', 'Il18bp',
-         'Il1rn', 'Ccl22', 'Anxa1', 'Ffar4', 'Tnfaip6', 'Il1r2', 'Vsir',
-         'Il4', 'Lif', 'Tnfaip3', 'Havcr2', 'Lilrb4a', 
-         'Ido1', 'Ido2', 'Cyp1a1', 'Cyp1b1', 'Ahr', 'Asns', 'Ddit3',
-         'Il1b', 'Ccr2', 'Il17f', 'Il17a', 'Fas', 'Fasl', 'Tnfsf10', 'Cd80',
-         'Tnfsf4', 'Ccl3', 'Ccl4', 'Cxcl2', 'Il2ra', 'Il2rb', 'Ccl5', 'Ccl2',
-         'Cxcl10', 'Cxcl1', 'Tnfsf18', 'Icosl', 'Il2', 'Nlrp3', 'Il17ra', 'Il17rb',
-         'Lilra5', 'Trem1', 'Il12a', 'Il12b', 'Il5', 'Il6', 'Ccl1', 'Cxcl9')
-goi <- c('Il10', 'Tgfb3', 'Mrc1', 'Ido1', 'Ido2', 'Cyp1a1', 'Cyp1b1', 'Asns',
-         'Ddit3', 'Il18bp', 'Pdcd1lg2', 'Cd274', 'Ccl17', 'Il1rn', 'Vsir',
-         'Il4', 'Tnfaip3', 'Havcr2', 'Lilrb4a', 'Ahr', 'Il1b', 'Ccr2', 'Il17f',
-         'Tnfsf4', 'Ccl3', 'Ccl4', 'Ccl2', 'Nlrp3', 'Il6', 'Cd80', 'Il12ra',
-         'Il12rb1', 'Il2', 'Trem1', 'Cxcl10', 'Il17ra', 'Il12b')
+goi <- c('Mertk', 'Axl', 'Cd36', 'Il10', 'Tgfb3', 'Ido1', 'Ido2',
+         'Cyp1a1', 'Cyp1b1', 'Ddit3', 'Pdcd1lg2', 'Timd4', 'Irf4',
+         'Lepr', 'Tslp', 'Mrc1', 'Ccl17', 'Cxcl2', 'Ccl4', 'Il6',
+         'Il1b', 'Gzmb', 'Vegfc', 'Il17a', 'Il1rn', 'Cd80', 'Cd40lg')
 celltype_order <- c('SSM', 'MSM')
 lnstatus_order <- c('LN', 'TDLN')
 treatment_order <- c('PBS', 'CIS')
@@ -1345,8 +1702,8 @@ res_celltype <- res_dds[[c('All')]]
 
 cat(paste0("Params: \n\t order_type = ", order_type, 
            "\n\t merge_replicates = ", merge_replicates, "\n"))
-row_ord <- NULL # Set to NULL if you want to cluster the genes
-# row_ord <- seq_along(goi) # Specify an order if you want to keep that gene-order
+# row_ord <- NULL # Set to NULL if you want to cluster the genes
+row_ord <- (goi) # Specify an order if you want to keep that gene-order
 heatmaps <- lapply(res_dds[c('All')], function(res_celltype){
   dds <- res_celltype$dds_lnBase 
   celltype_id <- unique(colData(dds)$celltype) %>%
@@ -1358,7 +1715,7 @@ heatmaps <- lapply(res_dds[c('All')], function(res_celltype){
     tibble::rownames_to_column(., "id") %>%
     mutate(id=ens2sym_ids[id]) %>%
     # filter(id %in% goi) %>% 
-    filter(!duplicated(id),
+    dplyr::filter(!duplicated(id),
            !is.na(id)) %>%
     tibble::column_to_rownames(., "id")
   cat(paste0("Genes not in your GOI: ", 
@@ -1369,9 +1726,9 @@ heatmaps <- lapply(res_dds[c('All')], function(res_celltype){
     as.data.frame %>%
     tibble::rownames_to_column(., "id") %>%
     mutate(id=ens2sym_ids[id]) %>%
-    # filter(id %in% goi) %>% 
-    filter(!duplicated(id),
-           !is.na(id)) %>%
+    dplyr::filter(id %in% goi) %>%
+    dplyr::filter(!duplicated(id),
+                  !is.na(id)) %>%
     tibble::column_to_rownames(., "id")
   vst_assay_mat <- as.matrix(cnt_mat_goi)
   vst_assay_mat <- as.matrix(vst_assay_goi)
@@ -1457,8 +1814,8 @@ gg_phm <- ComplexHeatmap::pheatmap(as.matrix(scaled_grp_goi), scale = 'none',
                          fontsize_row = 14,show_colnames = FALSE,
                          use_raster=FALSE, cluster_cols = FALSE, cluster_rows = FALSE
 ) %>% 
-  ggplotify::as.ggplot(.) +
-  theme_minimal(base_family = "Arial")
+  ggplotify::as.ggplot(.) #+
+  #theme_minimal(base_family = "Arial")
   
 # pdf(file.path(outdir, "final_figures", "msm_ssm_heatmap_gois.pdf"), width =9)
 pdf(file.path("~/xfer", "msm_ssm_heatmap_gois.y.pdf"), height = 12, width =4.5)
@@ -1607,7 +1964,7 @@ goi <- factor(goi, levels=goi)
 celltypes <- setNames(celltypes,celltypes)
 res_dds <- readRDS(file.path(outdir, "rds", "resl.rds"))
 lfc_goi <- res_dds$Celltype$res %>%
-  filter(symbol %in% goi) %>%
+  dplyr::filter(symbol %in% goi) %>%
   dplyr::select(symbol, `log2FoldChange.celltype_LN-PBS`, `padj.celltype_LN-PBS`) %>%
   rename_with(., ~c('symbol', 'logFC', 'padj')) %>%
   mutate(symbol=factor(symbol, levels=goi),
@@ -1885,7 +2242,7 @@ pairwise_words <- lapply(res_module_oras, function(module_i){
 lfc <- lapply(names(res_dds), function(res_id) {
   .addID <- function(x) paste0(x, ".", res_id)
   res_dds[[res_id]]$res %>%
-    select(., grep("(log2Fold)|(ens)|(gene)", colnames(.), value=T)) %>%
+    dplyr::select(., grep("(log2Fold)|(ens)|(gene)", colnames(.), value=T)) %>%
     rename_with(., .addID, starts_with("log2"))
 }) %>% 
   Reduce(function(x,y) merge(x,y,by=c('ens', 'gene'), all=T), .)

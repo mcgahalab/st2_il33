@@ -61,24 +61,26 @@
   return(all.len)
 }
 
-.getSubLca <- funcion(g, M, vertices){
+.getSubLca <- function(g, M, vertices){
   tbl <- table(M[vertices, vertices])
-  message("Pruning network to get sub-fully connected networks")
+  # message("Pruning network to get sub-fully connected networks")
   if(length(tbl) > 3){
     sub.networks <- lapply(seq_len(length(tbl)-3), function(idx){
       minval <- as.integer(names(tbl)[idx + 1])
       M.lvl <- ceiling(M[vertices,vertices]-minval)
       M.lvl[M.lvl<0] <- 0
       sapply(.fconn_networks(M.lvl), function(j){
-        .getLca(vertices=j, g=g, get.sublvls=F)[,1]
-      }) %>% unlistget.sublvls
+        lcares <- .getLca(vertices=j, g=g, get.sublvls=T)
+        pid <- unique(na.omit(lcares[,1]))
+        if(length(pid) ==0) pid <- unique(na.omit(lcares[,2]))[1]
+      }) %>% unlist
     })
   } else {
     sub.networks = NULL
   } 
   return(sub.networks)
 }
-  
+
 .getLca <- function(g, vertices, get.sublvls=F, 
                     M=NULL, force.subnetwork=T, verbose=F,
                     level=2){
@@ -92,13 +94,17 @@
   
   if(verbose) message(paste(GOTERMS[parent_nodes], collapse="\n"))
   if(verbose) message(paste(as.character(GOTERMS[i]), collapse="\n"))
-  if(length(parent_nodes) >0){
-    X = sapply(parent_nodes, function(pn){
-      sapply(shortest_paths(g, from=pn, to=vertices)$vpath, length)
-    })
-    idx <- which(colSums(X>0) == max(colSums(X>0)))
-    pid <- X[,idx,drop=F] %>% 
-      colSums %>% which.min %>% names
+  if(length(parent_nodes) >0 | length(sub_nodes)>0){
+    if(length(parent_nodes)>0){
+      X = sapply(parent_nodes, function(pn){
+        sapply(shortest_paths(g, from=pn, to=vertices)$vpath, length)
+      })
+      idx <- which(colSums(X>0) == max(colSums(X>0)))
+      pid <- X[,idx,drop=F] %>% 
+        colSums %>% which.min %>% names
+    } else {
+      pid <- NA
+    }
     if(!is.null(sub_nodes)){
       subid <- sub_nodes$GOID
       subid <- if(length(subid)>0) subid else NA
@@ -113,11 +119,19 @@
   return(res)
 }
 
-.getSlvlSize <- function(egopath, vertices, min.conn.size=0.5, level=2){
+.getSlvlSize <- function(g, egopath, vertices, level=2, max.size=50){
   all_ids <- unlist(sapply(egopath, attr, which='names'))
-  high_conn_size <- (table(all_ids) > ceiling(min.conn.size*length(vertices)))
-  if(any(high_conn_size)){
-    uids <- all_ids[high_conn_size]
+  tbl <- table(all_ids)
+  uids <- names(head(sort(tbl, decreasing = T), 
+                     min(c(length(tbl), max.size))))
+  # for(r in seq(0.75, 1, by=0.001)){
+  #   min.conn.size <- quantile(as.integer(table(all_ids)),r)
+  #   high_conn_size <- (table(all_ids) > as.integer(min.conn.size))
+  #   if(sum(high_conn_size) <= max.size) break
+  # }
+  
+  # if(any(high_conn_size)){
+    # uids <- all_ids[high_conn_size]
     all_path_len <- uids %>%
       sapply(., function(pn){
         sapply(shortest_paths(g, from=pn, to=vertices)$vpath, length)
@@ -128,18 +142,19 @@
                "tnetwork_size"=connected_cnt) %>%
       dplyr::arrange(., desc(tnetwork_size), tpath_length) %>%
       head(., level)
-  } else {
-    res <- as.data.frame(matrix(ncol=3, nrow=0)) %>%
-      magrittr::set_colnames(., c('GOID', 'tpath_length', 'tnetwork_size'))
-  }
+  # } else {
+  #   res <- as.data.frame(matrix(ncol=3, nrow=0)) %>%
+  #     magrittr::set_colnames(., c('GOID', 'tpath_length', 'tnetwork_size'))
+  # }
   return(res)
 }
 
-lca <- function(g, vertices, get.sublvls=F, M=NULL, force.subnetwork=T, level=2) {
+lca <- function(g, vertices, get.sublvls=F, M=NULL, 
+                force.subnetwork=T, level=2) {
   pathi = ego(g, order=length(V(g)), nodes=vertices, mode='in') # original 'in'
   res <- V(g)[[(Reduce(intersect, pathi))]]
   if(get.sublvls){
-    subs <- .getSlvlSize(pathi, vertices, level=level)
+    subs <- .getSlvlSize(g, pathi, vertices, level=level)
   } else {
     subs <- NULL
   }
@@ -166,7 +181,8 @@ lca <- function(g, vertices, get.sublvls=F, M=NULL, force.subnetwork=T, level=2)
 # Given a list of GOIDs from different modalities, tries to combine
 # them using semantic similarity and then report the LCA for each
 # group
-semantic.combine <- function(golist, g, min.cnt = 1){
+semantic.combine <- function(golist, g, M=NULL, 
+                             min.cnt = 1, get.sublvls=F){
   # Integrate the 3 modalities
   goterms <- golist[!sapply(golist, is.null)] %>%
     lapply(., function(i){
@@ -192,21 +208,12 @@ semantic.combine <- function(golist, g, min.cnt = 1){
   })
   pamk.spl <- pamk.spl[multi.idx]
   
-  aggregate_go <- sapply(seq_along(pamk.spl), function(i){
+  aggregate_go <- lapply(seq_along(pamk.spl), function(i){
+    message(paste0("Aggregate: ", i, "/", length(pamk.spl)))
     Xi <- X[pamk.spl[[i]],pamk.spl[[i]],drop=F]
-    names(.getLca(g, goterms[pamk.spl[[i]]]))
-    
-    # # Remove clusters of no-association
-    # diag(Xi) <- 1
-    # bool <- any(Xi < 1)
-    # if(bool) {
-    #   # print(GOTERMS[goterms[pamk.spl[[i]]]])
-    #   # print(GOTERMS[names(print(.getLca(g, goterms[pamk.spl[[i]]])))])
-    #   # print(Xi)
-    #   names(.getLca(g, goterms[pamk.spl[[i]]]))
-    # } else {
-    #   NULL
-    # }
+    .getLca(g, goterms[pamk.spl[[i]]], 
+            get.sublvls = get.sublvls,
+            M=M)
   })
   return(aggregate_go)
 }

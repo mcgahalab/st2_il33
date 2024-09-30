@@ -3423,7 +3423,7 @@ cd45_treg_map <- readRDS(file=file.path(datadir, "annotation_map", "cd45_tregs.r
 overwrite <- FALSE
 
 
-rm_removecells <- FALSE
+rm_removecells <- T
 for(lt in c('LN', 'Tumor')){
   seul[[lt]]$manual_anno <- NA
   seul[[lt]]$manual_anno <- cd45_recode_map(seul[[lt]]$seurat_clusters, grp=lt)
@@ -3651,6 +3651,225 @@ if(remove_cd3_cd19){
   
 }
 
+#--- viii.a) CD45 - total cell plot - April 2024 ----
+if(!exists("seul"))  seul <- readRDS(file.path(datadir, "seurat_obj", "seu_integ_CD45_7D.split.final.rds"))
+outdir <- file.path(PDIR, "results")
+seu <- seul$Tumor 
+grouping <- 'cd45_all_cells'
+overwrite=F
+
+## Remove and relabel cells
+seu@meta.data$manual_anno[grep("macrophage", seu@meta.data$manual_anno, ignore.case=T)] <- 'Macrophage'
+seu <- subset(seu, cells=Cells(seu)[grep("CD3_DN_Naive", seu$manual_anno, invert = T)])
+seu$newid <- gsub("(CD8|TReg|CD4|NK)_.*", "\\1\\2", seu$manual_anno)
+seu$newid[seu$manual_anno == 'CD8_memory2'] <- 'Gamma_Delta_Tcells'
+seu$newidcycling <- gsub("(CD8|TReg|CD4|NK)_.*((_cycling)?)?", "\\1\\2", seu$manual_anno)
+seu$newidcycling[seu$manual_anno == 'CD8_memory2'] <- 'Gamma_Delta_Tcells'
+# table(seu$manual_anno, gsub("(CD8|TReg|CD4|NK)_.*", "\\1", seu$manual_anno))
+# table(seu$manual_anno, gsub("(CD8|TReg|CD4|NK)_.*((_cycling)?)?", "\\1\\2", seu$manual_anno))
+# gsub("(CD8|TReg|CD4|NK)_.*((_cycling)?)?", "\\1\\2", c('CD8_effector', 'CD8_effector_cycling', 'TReg_NLTlike'))
+seul$Tumor <- seu
+pdf("~/xfer/y.pdf", width = 13)
+publicationDimPlot(seul$Tumor, grp='manual_anno', reduction='umap')
+publicationDimPlot(seul$Tumor, grp='newid', reduction='umap')
+publicationDimPlot(seul$Tumor, grp='newidcycling', reduction='umap')
+dev.off()
+seul$LN$newidcycling <- seul$LN$newid <- seul$LN$manual_anno
+
+
+## X
+# 
+# id <- 'Tumor'
+# seux <- seul[[id]]@meta.data %>% 
+#   dplyr::select(c(orig.ident, nCount_RNA, nFeature_RNA, percent.mt, 
+#                   manual_anno)) %>%
+#   rename_with(., ~gsub("manual_anno", "anno_allCells", .))
+# seux <- seul[[id]]@reductions$umap@cell.embeddings  %>%
+#   as.data.frame %>% 
+#   rename_with(., ~c('umap_allCells_1', 'umap_allCells_2')) %>%
+#   cbind(seux, .) %>%
+#   tibble::rownames_to_column(., "barcode")
+# 
+# seuy <- seu@meta.data %>% 
+#   dplyr::select(manual_anno) %>%
+#   cbind(.,  seu@reductions$umap@cell.embeddings %>% 
+#           as.data.frame %>% 
+#           rename_with(., ~c('umap_Cd8_1', 'umap_Cd8_2')))  %>%
+#   tibble::rownames_to_column(., "barcode")
+# 
+# seuxy <- left_join(seux, seuy, by='barcode')
+# dir='/cluster/projects/mcgahalab/data/mcgahalab/st2_il33/geo_submission/scrna/processed'
+# write.table(seuxy, file=file.path(dir, paste0("CD45_", id, "_meta.csv")),
+#             sep=",", col.names = T, row.names = F, quote = F)
+# cnts <- GetAssayData(seul[[id]], assay='RNA', slot='counts')
+# as.data.frame(cnts) %>% tibble::rownames_to_column(., "feature") %>%
+#   write.table(., file=file.path(dir, paste0("CD45_", id, "_cnts.csv")),
+#               sep=",", col.names = T, row.names = F, quote = F)
+## X
+
+## FindAllMarkers on everything and run DotPlot
+id = 'newidcycling'
+allmarkers <- lapply('Tumor', function(seuid){
+  seu <- seul[[seuid]]
+  Idents(seu) <- id
+  seuid_markers <- FindAllMarkers(object = seu) %>%
+    scCustomize::Add_Pct_Diff() 
+  return(seuid_markers)
+})
+names(allmarkers) <-'Tumor'
+
+for(seuid in names(allmarkers)){
+  amarkers <- allmarkers[[seuid]] %>%
+    dplyr::filter(pct_diff > 0.6)
+  top_markers <- amarkers %>%
+    scCustomize::Extract_Top_Markers(marker_dataframe = ., num_genes = 20, 
+                                     named_vector = FALSE, make_unique = TRUE)
+  top_markers_tbl <- amarkers %>%
+    scCustomize::Extract_Top_Markers(marker_dataframe = ., num_genes = 50, 
+                                     named_vector = FALSE, make_unique = TRUE)
+  seu <- seul[[seuid]]
+  Idents(seu) <- id
+  genes <- read.csv(file.path(PDIR, "ref", "dotplots", paste0("CD45_", seuid, ".csv")),
+                    header = T, sep=",")
+  
+  write.table(amarkers %>% dplyr::filter(gene %in% top_markers_tbl),
+              file=file.path("~/xfer", paste0("CD45_", seuid, ".csv")), 
+              sep=",", col.names = T, row.names = F, quote = F)
+  
+  pdf(file.path("~/xfer", paste0("CD45_", seuid, ".pdf")), height = 20)
+  scCustomize::DotPlot_scCustom(seurat_object = seu, 
+                                features = unique(genes$gene),
+                                flip_axes = T,
+                                x_lab_rotate = TRUE)
+  scCustomize::Clustered_DotPlot(seurat_object = seu, 
+                                 features = unique(genes$gene),
+                                 k=length(unique(Idents(seu))),
+                                 x_lab_rotate = TRUE, print_exp_quantiles = T,
+                                 exp_color_min = -1, exp_color_max = 3)
+  
+  scCustomize::DotPlot_scCustom(seurat_object = seu, 
+                                features = top_markers,
+                                flip_axes = T,
+                                x_lab_rotate = TRUE)
+  scCustomize::Clustered_DotPlot(seurat_object = seu, 
+                                 features = top_markers,
+                                 k=length(unique(Idents(seu))),
+                                 x_lab_rotate = TRUE, print_exp_quantiles = T,
+                                 exp_color_min = -1, exp_color_max = 3)
+  dev.off()
+  
+  cat(paste0("xfer CD45_", seuid, ".csv\n"))
+  cat(paste0("xfer CD45_", seuid, ".pdf\n"))
+  
+}
+
+
+### DEG UMAP highlight plot
+method <- 'wilcox'
+sigdig <- 3
+deg_umapgg <- lapply(names(seul)[2], function(seuid){
+  seu <- seul[[seuid]]
+  seu$group <- paste0(seu$orig.ident, ".", seu$manual_anno)
+  
+  # Create testing groups
+  uids <- unique(seu$group)
+  x <- split(uids, f=gsub("^.*\\.", "", uids))
+  xt_all <- lapply(x, function(i){
+    data.frame("V1"=grep("KO_7d", i, value=T),
+               "V2"=grep("WT_7d", i, value=T),
+               "baselvl"=grep("KO_7d", i, value=T),
+               'id1'='KO_7d',
+               'id2'='WT_7d')
+  }) %>% do.call(rbind, .)
+ 
+  outf = file.path(outdir, grouping, paste0(seuid, ".wilcox_deg.rds"))
+  if(!file.exists(outf) | overwrite){
+    markers_all <- apply(xt_all, 1, function(ids){
+      print(paste0("Testing ", ids[4], " - ", ids[5]))
+      ids_test <- factor(c(ids[1], ids[2]))
+      ids_test <- relevel(ids_test, ids[3])
+      ord <- order(ids_test)
+      
+      Idents(seu) <- 'group'
+      tryCatch({
+        FindMarkers(seu, 
+                    ident.1=ids[c(1,2)[ord[1]]],
+                    ident.2=ids[c(1,2)[ord[2]]], 
+                    logfc.threshold=0, 
+                    test.use=method) %>%
+          tibble::rownames_to_column(., "gene") %>%
+          mutate(ens=gm$SYMBOL$ENSEMBL[gene],
+                 biotype=gm$ENSEMBL$gene_biotype[ens],
+                 id1=ids[c(4,5)[ord[1]]],
+                 id2=ids[c(4,5)[ord[2]]],
+                 fullid1=ids[c(1,2)[ord[1]]],
+                 fullid2=ids[c(1,2)[ord[2]]],
+                 p_val = round(p_val, sigdig),
+                 avg_log2FC=round(avg_log2FC, sigdig),
+                 p_val_adj = ifelse(p_val_adj < 10^(-1*sigdig), 
+                                    p_val_adj, 
+                                    round(p_val_adj, sigdig))) %>%
+          relocate(., c(gene, ens, biotype, id1, id2)) %>%
+          rename_with(., ~gsub("p_val_adj", paste0(method, ".p_val_adj"), .))
+      }, error=function(e){NULL})
+      
+    })
+    saveRDS(markers_all, file=outf)
+  } else {
+    markers_all <- readRDS(outf)
+  }
+  
+  
+
+  markers_sub <- lapply(markers_all, function(i){
+    i %>% 
+      dplyr::filter(wilcox.p_val_adj <= 0.05,
+                    abs(avg_log2FC) >= 0.5,
+                    biotype == 'protein_coding',
+                    !grepl("Rik$", gene),
+                    !grepl("^Gm", gene))
+  })
+  names(markers_sub) <- gsub("\\.[0-9]*$", "", names(markers_sub))
+  tbl <- table(seu@meta.data$manual_anno, seu@meta.data$newid) %>%
+    as.data.frame %>%  dplyr::filter(Freq > 0)
+  idmap.v <- with(tbl, setNames(as.character(Var2), as.character(Var1)))
+  ctcnts <- sapply(split(markers_sub, idmap.v[names(markers_sub)]), function(i) sum(sapply(i, nrow)))
+  
+  
+  
+  maxval <- if(seuid == 'LN') 150 else 101
+  cols <- setNames(viridis_plasma_dark_high[ceiling(ctcnts * 1/(maxval/250))+1],
+                   names(ctcnts))
+  Idents(seu) <- 'newid'
+  pdp <- publicationDimPlot(seu, grp='newid', colors_use=as.character(cols[levels(Idents(seu))]), 
+                            reduction='umap', return='list')
+  
+  
+  ggleg <- ggplot(data=data.frame(id=seq_len(maxval)), 
+                  aes(x=id, y=id, color=id)) +
+    geom_point() +
+    scale_color_gradientn(colors = scCustomize::viridis_plasma_dark_high) +
+    labs(color='# of DEGs')
+  leg <- ggpubr::get_legend(ggleg)
+  
+  pdp$plot <- pdp$plot + ggtitle(paste0(seuid))
+  plot_figure <- pdp$plot + pdp$axis_plot + ggpubr::as_ggplot(leg) +
+    patchwork::plot_layout(design = c(
+      patchwork::area(t = 1, l = 2, b = 11, r = 11),
+      patchwork::area(t = 10, l = 1, b = 12, r = 2),
+      patchwork::area(t = 1, l = 11, b = 4, r = 12))) & 
+    theme(aspect.ratio=pdp$aspect.ratio)
+  return(plot_figure)
+  pdf("~/xfer/CD45_Tumor.degUMAP.pdf"); plot_figure; dev.off()
+})
+
+
+
+
+
+
+
+
 
 pdf("~/xfer/CD45_total_cells.pdf", width = 15,height = 15)
 ggdim_seul <- lapply(names(seul), function(seuid){
@@ -3698,6 +3917,26 @@ dev.off()
 
 if(overwrite) saveRDS(seul, file.path(datadir, "seurat_obj", "seu_integ_CD45_7D.split.final.rds"))
 seul <- readRDS(file=file.path(datadir, "seurat_obj", "seu_integ_B3D7D.split.final.rds"))
+
+
+write_loupe <- F
+if(write_loupe){
+  seul <- readRDS(file.path(datadir, "seurat_obj", "seu_integ_CD45_7D.split.final.rds"))
+  for(id in names(seul)){
+    seu <- seul[[id]]
+    seu@meta.data <- seu@meta.data[,c('orig.ident', 'seurat_clusters', 'manual_anno', 'monocle3_clusters')]
+    seu[['RNA2']] <- CreateAssayObject(counts=seu@assays$RNA$counts)
+    DefaultAssay(seu) <- 'RNA2'
+    
+    dir.create(file.path(PDIR, "results", "cloupe"), showWarnings = F)
+    loupeR::create_loupe_from_seurat(seu, output_dir=file.path(PDIR, "results", "cloupe"),
+                                     output_name=paste0("CD45_", id), force=T, tmpdir=PDIR)
+    file.copy(file.path(PDIR, "results", "cloupe", paste0("CD45_", id, ".cloupe")), to = "~/xfer", overwrite = T)
+    cat(paste0("xfer ", paste0("CD45_", id, ".cloupe\n")))
+    
+  }
+  
+}
 
 if(do_visualize){
   pdf("~/xfer/xTfixed.pdf", width = 7,height = 7)
@@ -3851,6 +4090,131 @@ seu <- DietSeurat(seuT_l$cd8, assays='RNA', dimreducs=c('umap', 'mnn'))
 seu@meta.data <- seu@meta.data[,c('orig.ident', 'nCount_RNA', 'nFeature_RNA', 'percent.mt', 'seurat_clusters', 'manual_anno')]
 saveRDS(seu, file=file.path(datadir, "seurat_obj", "CD45_Tumor_CD8.seuratobj.rds"))
 
+write.cloupe=F
+if(write.cloupe){
+  seu = readRDS(file=file.path(datadir, "seurat_obj", "CD45_Tumor_CD8.seuratobj.rds"))
+  seu@meta.data <- seu@meta.data[,c('orig.ident', 'seurat_clusters', 'manual_anno')]
+  seu[['RNA2']] <- CreateAssayObject(counts=seu@assays$RNA$counts)
+  DefaultAssay(seu) <- 'RNA2'
+  
+  dir.create(file.path(PDIR, "results", "cloupe"), showWarnings = F)
+  loupeR::create_loupe_from_seurat(seu, output_dir=file.path(PDIR, "results", "cloupe"),
+                                   output_name="cd45_cd8_tumor", force=T)
+  file.copy(file.path(PDIR, "results", "cloupe", "tregs_all_samples.selgenes.cloupe"), to = "~/xfer", overwrite = T)
+  cat(paste0("xfer tregs_all_samples.selgenes.cloupe\n"))
+  
+  
+}
+
+# FindAllMarkers deg plot
+{
+  seu = readRDS(file=file.path(datadir, "seurat_obj", "CD45_Tumor_CD8.seuratobj.rds"))
+  Idents(seu) <- 'manual_anno'
+  seu <- subset(seu, ident=grep("memory2", unique(Idents(seu)), value=T, invert = T))
+  seus <- list('Tumor'=seu)
+  grp <- 'manual_anno'
+  
+  allmarkers <- lapply(names(seus), function(seuid){
+    seu <- seus[[seuid]]
+    Idents(seu) <- grp
+    seuid_markers <- FindAllMarkers(object = seu) %>%
+      scCustomize::Add_Pct_Diff() 
+    return(seuid_markers)
+  })
+  names(allmarkers) <- names(seus)
+  
+  for(seuid in names(seus)){
+    amarkers <- allmarkers[[seuid]] %>%
+      dplyr::filter(pct_diff > 0.2)
+    top_markers <- amarkers %>%
+      scCustomize::Extract_Top_Markers(marker_dataframe = ., num_genes = 20, 
+                                       named_vector = FALSE, make_unique = TRUE)
+    top_markers_tbl <- amarkers %>%
+      scCustomize::Extract_Top_Markers(marker_dataframe = ., num_genes = 50, 
+                                       named_vector = FALSE, make_unique = TRUE)
+    seu <- seus[[seuid]]
+    Idents(seu) <- grp
+    seu <- subset(seu, idents=grep(".+", unique(Idents(seu)), value=T))
+    seu <- seus[[seuid]]
+    Idents(seu) <- grp
+    genes <- read.csv(file.path(PDIR, "ref", "dotplots", paste0("CD45_", seuid, "_CD8.csv")),
+                      header = T, sep=",")
+    
+    write.table(amarkers %>% dplyr::filter(gene %in% top_markers_tbl),
+                file=file.path("~/xfer", paste0("CD45.CD8_", seuid, ".csv")), 
+                sep=",", col.names = T, row.names = F, quote = F)
+    
+    pdf(file.path("~/xfer", paste0("CD45.CD8_", seuid, ".pdf")), height = 12)
+    scCustomize::DotPlot_scCustom(seurat_object = seu, 
+                                  features = unique(genes$gene),
+                                  flip_axes = T,
+                                  x_lab_rotate = TRUE)
+    scCustomize::Clustered_DotPlot(seurat_object = seu, 
+                                   features = unique(genes$gene),
+                                   k=length(unique(Idents(seu))),
+                                   x_lab_rotate = TRUE, print_exp_quantiles = T,
+                                   exp_color_min = -1, exp_color_max = 3)
+    
+    scCustomize::DotPlot_scCustom(seurat_object = seu, 
+                                  features = top_markers,
+                                  flip_axes = T,
+                                  x_lab_rotate = TRUE)
+    scCustomize::Clustered_DotPlot(seurat_object = seu, 
+                                   features = top_markers,
+                                   k=length(unique(Idents(seu))),
+                                   x_lab_rotate = TRUE, print_exp_quantiles = T,
+                                   exp_color_min = -1, exp_color_max = 3)
+    dev.off()
+    
+    pdf(file.path("~/xfer", paste0("CD45.CD8_", seuid, "_umap.pdf")), width = 7, height = 7)
+    publicationDimPlot(seu, grp=grp, reduction='umap', 
+                       simplify_labels=if(grp=='manual_anno') T else F) %>% plot
+    dev.off()
+    
+    cat(paste0("xfer CD45.CD8_", seuid, ".csv\n"))
+    cat(paste0("xfer CD45.CD8_", seuid, "_umap.pdf\n"))
+    cat(paste0("xfer CD45.CD8_", seuid, ".pdf\n"))
+    
+    
+    seu@meta.data %>% 
+      dplyr::select(c(orig.ident, nCount_RNA, nFeature_RNA, manual_anno)) %>%
+      cbind(., seu@reductions$umap@cell.embeddings) %>%
+      write.table(., file="~/xfer/CD45_Tumor_cd8.csv", sep=",", 
+                  quote=F, col.names = T, row.names = T)
+  }
+}
+
+# ViolinPlot of AUCell score for CD8 signature
+{
+  expr <- GetAssayData(seu, slot='counts')
+  expr <- expr[rowSums(expr)>=50, ]
+  f <- list.files(file.path(PDIR, "ref", "cd8_signature"))
+  gs <- lapply(f, function(fi) read.table(file.path(PDIR, "ref", "cd8_signature", fi),
+                                    sep=",", header = F)$V1) %>% 
+    setNames(., gsub(".csv$", "", f))
+  
+  score <- AUCell::AUCell_run(expr, gs)
+  score_df <- cbind(t(assay(score)),
+                    seu@meta.data[,c('orig.ident', 'manual_anno')]) %>% 
+    as.data.frame %>%
+    tidyr::pivot_longer(., cols=!c(manual_anno, orig.ident))
+  
+  pdf("~/xfer/cd8_signature_scores.pdf")
+  X <- split(score_df, f=score_df$name)
+  lapply(X, function(x){
+    model <- aov(value~manual_anno, data=as.data.frame(x))
+    TukeyHSD(model, conf.level=.95)
+  })
+  ggplot(score_df, aes(x=manual_anno, y=value, fill=manual_anno))+
+    facet_grid(name~., space='free', scales='free') +
+    geom_violin() + 
+    cowplot::theme_cowplot() +
+    ylim(0, 0.125) +
+    ylab("AUCell score") +
+    theme(axis.text.x=element_text(angle = 45, hjust = 1, vjust=1),
+          axis.title.x = element_blank())
+  dev.off()
+}
 
 seu <- ScaleData(seu, features=Features(seu))
 pdf("~/xfer/x.pdf", height = 6, width = 8)

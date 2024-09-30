@@ -33,7 +33,7 @@ batch='B1' # B1, B2
 label_id = 'manual_anno'
 sample_id = 'orig.ident'
 basis_id = 'umap_orig' # umap umap_orig
-celltype = 'tregs' # 'tregs' 'cd8'
+celltype = 'cd8' # 'tregs' 'cd8'
 
 outdir = Path("/cluster/home/quever/xfer/")
 indir = Path("/cluster/projects/mcgahalab/data/mcgahalab/st2_il33/scrna_tdln_tumor_7d/results/scVelo/", celltype)
