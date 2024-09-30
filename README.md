@@ -1,93 +1,50 @@
-# ST2 and Il-33 Repo
-## Description
-ST2 Gene Name: IL1RL1
+# Lymph node macrophages drive immune tolerance and resistance to cancer therapy by expression of the immune-regulatory cytokine IL-33.
+## Bioinformatic Analysis
 
-_IL1RL1_ should be higher expressed in the bulk tumor samples, as it is not expressed in the tumor cells themselves, while IL-33 should be highly expressed in the lymph nodes.
+### 1. scRNA Analysis
+#### A) Differential and pathway analysis
+OVERVIEW:
+This section performs all the analysis on the ST2-sorted and CD45-sorted single-cell RNAseq data. The annotations for each of theese datasets can be found in the data directory:
+- CD45_Tumor_cd8.csv
+- ST2_LN_Tregs.csv
+- ST2_LN_allcells.csv
+- ST2_Tumor_Tregs.csv
+- ST2_Tumor_allcells.csv
 
-Main focus of this project is to:
-  * Look for associations between high ST2 and tumor progression/size/tumor subtypes (ST2 not expressed in tumor cells so it should be fine to look at bulkRNA)
-  * Look for correlations between ST2 and 
-    *   PD1 expression  - ST2 promotes PD1 expression
-    *   CTLA4 expression  - marker similar to PD1
-    *   TOX
-    *   KLRG1
+TReg reference dataset from Gomes et al., 2019 (DOI: 10.1016/j.immuni.2019.01.001) was downloaded from https://figshare.com/projects/Treg_scRNA-seq/38864.
 
-If possible, find a database on lymph nodes and look for IL-33 expression in senital lymph nodes.
-If possible, investigate single cell more and look at levels of ST2 in terms of monocyte activation and deactivation
-
-## Dataset Details
-* **GDC TCGA dataset**: https://portal.gdc.cancer.gov/
-  * 33 cancer types found across the TCGA project, with the following sample sizes per cancer type:
-```TCGA-ACC    79
-TCGA-BLCA  433
-TCGA-BRCA 1222
-TCGA-CESC  309
-TCGA-CHOL   45
-TCGA-COAD  521
-TCGA-DLBC   48
-TCGA-ESCA  173
-TCGA-GBM   174
-TCGA-HNSC  546
-TCGA-KICH   89
-TCGA-KIRC  611
-TCGA-KIRP  321
-TCGA-LAML  151
-TCGA-LGG   529
-TCGA-LIHC  424
-TCGA-LUAD  594
-TCGA-LUSC  551
-TCGA-MESO   86
-TCGA-OV    379
-TCGA-PAAD  182
-TCGA-PCPG  186
-TCGA-PRAD  551
-TCGA-READ  177
-TCGA-SARC  265
-TCGA-SKCM  472
-TCGA-STAD  407
-TCGA-TGCT  156
-TCGA-THCA  568
-TCGA-THYM  121
-TCGA-UCEC  587
-TCGA-UCS    56
-TCGA-UVM    80
-```   
-
-## Workflow
-Reproducibility: The conda environment used for this analysis is provided in `envs/environment.yaml`. Packages that had to be installed outside of conda are listed in the `envs/r-env.txt` file.
-
-The dataset directory is set up as followed:
-```
-data
-├── clinical
-│   ├── TCGA-ACC.clinical.rds
-|   ...
-│   └── TCGA-UVM.clinical.rds
-├── counts
-│   ├── exprs
-│   │   ├── TCGA-ACC.HTSeq-Counts.assay.rds
-│   │   ...
-│   │   └── TCGA-UVM.HTSeq-Counts.assay.rds
-│   └── obj
-│       ├── TCGA-ACC.HTSeq-Counts.obj.rds
-│       ...
-│       └── TCGA-UVM.HTSeq-Counts.obj.rds
-└── fpkm
-    ├── exprs
-    │   ├── TCGA-ACC.HTSeq-FPKM-UQ.assay.rds
-    |   ...
-    │   └── TCGA-UVM.HTSeq-FPKM-UQ.assay.rds
-    └── obj
-        ├── TCGA-ACC.HTSeq-FPKM-UQ.obj.rds
-        ...
-        └── TCGA-UVM.HTSeq-FPKM-UQ.obj.rds
-
-```
-All these files were generated using the `code/downloadTCGA.R` script in a web-accessible node, then relocated for downstream analysis.
+#### B) Velocity/trajectory analysis
+Differential analysis comparing local velocities in the scVelo analysis can be performed using the `scvelo_analysis.py` script using the `scvelo_helper` python package.
 
 
-A preliminary analysis of ST2 gene expression across all TCGA projects, as well as a survival analysis and simple ANOVA analysis on the metadata can be found in the `code/st2_expr-survcurv-meta.R` script
+### 2. RNA-seq Analysis
+#### A) MSM-SSM Analysis
+OVERVIEW:
+This section performs all the analysis on the TDLN and LN MSM/SSM samples that were treated with Cisplating (Cis) or PBS. The main analysis is performed in the `msm_ssm_analysis.R` code. The relevant count/tpm and metadata needed is found in the `data/msm_ssm.{counts|samples|tpm}.tsv` files. Everything from preprocessing to the differential expression, GSEA, ssGSEA, and regulon analysis can be found in this section.
 
+#### B) rDC-mDC analysis
+OVERVIEW:
+This section performs all the analysis on the regulatory and migratory DCs in the Tumor/WT samples that were treated with Cisplating (Cis) or PBS. The main analysis is performed in the `mdc_rdc_analysis.R` code. The relevant count/tpm and metadata needed is found in the `data/mdc_rdc.{counts|samples|tpm}.tsv` files. Everything from preprocessing to the differential expression, GSEA, ssGSEA, and regulon analysis can be found in this section.
 
- 
+### 3. Meta-Analysis
+OVERVIEW:
+This section performs the survival curve analysis on the TCGA and GTEx dataset, as well as the expanded analysis on the 3 RNA-seq dataasets from Liu, Gide, and Riaz.
 
+REQUIREMENTS:
+The TReg signature derived in the earlier section and Supp Table 2 will be used here, stored as `treg_signature_paper.human.csv`
+
+Liu_PMID31792460:
+- TPM matrix from Supp. Data 2: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6898788/bin/41591_2019_654_MOESM3_ESM.txt
+- Metadata from Supp. Table 1: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6898788/bin/41591_2019_654_MOESM4_ESM.xlsx
+
+Gide_PMID30753825:
+- Count matrix from Git repo: https://github.com/miabioinformatics/Gide_Quek_CancerCell2019
+- Metadata from Supp. Table 1 and 2: https://www.sciencedirect.com/science/article/pii/S1535610819300376?via%3Dihub#app2
+
+Riaz_PMID29033130:
+- FPKM matrix from GEO: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE91061
+- Metadata from Supp. Table 2: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5685550/bin/NIHMS907788-supplement-11.xlsx
+
+TCGA and GTEX:
+- Gene expression FPKM matrix downloaded from Xena: https://xenabrowser.net/datapages/?cohort=TCGA%20TARGET%20GTEx
+- Phenotype metadata downloaded from Xena: https://xenabrowser.net/datapages/?cohort=TCGA%20TARGET%20GTEx
